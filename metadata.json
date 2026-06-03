@@ -1,0 +1,5 @@
+{
+  "name": "Hostel Review Analytics",
+  "description": "A dashboard for hostel managers to analyze Booking.com reviews, track performance scores, and gain AI-powered insights from guest feedback.",
+  "requestFramePermissions": []
+}

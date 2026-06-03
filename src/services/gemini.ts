@@ -1,0 +1,451 @@
+import { GoogleGenAI, Type } from "@google/genai";
+import { BookingReview } from "../types";
+
+// ----------------------------------------------------------------------
+// Response validators. The SDK enforces responseSchema on most paths,
+// but the model can still emit malformed JSON or inject extra prose
+// despite responseMimeType. Validate every parsed payload before use
+// so a single bad response can't silently corrupt the dashboard.
+// ----------------------------------------------------------------------
+
+const isString = (v: unknown): v is string => typeof v === 'string';
+const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const isSentiment = (v: unknown): v is 'positive' | 'negative' | 'neutral' =>
+  v === 'positive' || v === 'negative' || v === 'neutral';
+
+interface TranslationItem {
+  title: string;
+  pos: string;
+  neg: string;
+  reply: string;
+  sentiment?: 'positive' | 'negative' | 'neutral';
+}
+
+const validateTranslationArray = (raw: unknown): TranslationItem[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item: unknown): TranslationItem | null => {
+      if (!item || typeof item !== 'object') return null;
+      const o = item as Record<string, unknown>;
+      // Coerce missing strings to empty rather than dropping the whole item
+      const title = isString(o.title) ? o.title : '';
+      const pos = isString(o.pos) ? o.pos : '';
+      const neg = isString(o.neg) ? o.neg : '';
+      const reply = isString(o.reply) ? o.reply : '';
+      const sentiment = isSentiment(o.sentiment) ? o.sentiment : undefined;
+      // If every field is empty, drop -- nothing to merge
+      if (!title && !pos && !neg && !reply) return null;
+      return { title, pos, neg, reply, sentiment };
+    })
+    .filter((x): x is TranslationItem => x !== null);
+};
+
+interface SentimentItem { sentiment: 'positive' | 'negative' | 'neutral'; }
+
+const validateSentimentArray = (raw: unknown): SentimentItem[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item: unknown) => {
+    if (!item || typeof item !== 'object') return [];
+    const s = (item as Record<string, unknown>).sentiment;
+    return isSentiment(s) ? [{ sentiment: s }] : [];
+  });
+};
+
+interface CategoriesPayload {
+  categories: { name: string; count: number }[];
+  summary: string;
+}
+
+const validateCategoriesPayload = (raw: unknown): CategoriesPayload | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const summary = isString(o.summary) ? o.summary : '';
+  if (!Array.isArray(o.categories)) return null;
+  const categories = o.categories.flatMap((c: unknown) => {
+    if (!c || typeof c !== 'object') return [];
+    const co = c as Record<string, unknown>;
+    if (!isString(co.name) || !isFiniteNumber(co.count)) return [];
+    return [{ name: co.name.trim(), count: Math.max(0, Math.floor(co.count)) }];
+  });
+  if (categories.length === 0 && !summary) return null;
+  return { categories, summary };
+};
+
+const safeParseJSON = (text: string | undefined): unknown => {
+  if (!text) return null;
+  // Strip markdown code fences if present
+  const cleaned = text.replace(/```json/g, '').replace(/```/g, '').trim();
+  try { return JSON.parse(cleaned); } catch { return null; }
+};
+
+
+export async function generateInsights(reviews: BookingReview[], targetLanguage: string = "English") {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
+    return "AI Analysis Error: No valid API key found. Please configure your GEMINI_API_KEY in the environment secrets.";
+  }
+  const ai = new GoogleGenAI({ apiKey });
+  
+  // Take a sample of reviews to avoid token limits if the list is huge
+  const sampleReviews = reviews.slice(0, 20).map(r => ({
+    score: r.reviewScore,
+    pos: r.translatedPositive || r.positiveReview,
+    neg: r.translatedNegative || r.negativeReview
+  }));
+
+  const prompt = `
+    You are a boutique hostel management consultant and data scientist. Analyze these Booking.com reviews and provide a high-level strategic synthesis:
+    1. **Strategic Strengths**: What are our top 3 competitive advantages that we should market?
+    2. **Critical Vulnerabilities**: What are the top 3 systemic issues damaging our reputation?
+    3. **Departmental Action Plan**:
+       - **Housekeeping**: One specific task to improve cleanliness scores.
+       - **Front Desk**: One protocol change to enhance guest welcome.
+       - **Maintenance**: One priority repair based on recurring complaints.
+    4. **The "North Star" Metric**: What is the single most important change needed to raise our overall rating by 1.0 point?
+
+    IMPORTANT: Write the entire analysis in ${targetLanguage}. Use a professional tone.
+
+    Reviews Data Sample:
+    ${JSON.stringify(sampleReviews)}
+
+    Return the analysis in a professional, structured markdown format with clear headers and bullet points. Use bold text for emphasis.
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    });
+    return response.text;
+  } catch (error) {
+    console.error("Error generating insights:", error);
+    return `Failed to generate insights. Please check your API key.`;
+  }
+}
+
+export async function translateReview(text: string, targetLanguage: string = "English") {
+  if (!text || text.trim().length === 0 || text === "-") return text;
+  
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+  
+  const prompt = `Translate the following text to ${targetLanguage}. If it's already in ${targetLanguage}, return it as is. Only return the translated text, nothing else.
+  
+  Text: "${text}"`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    });
+    return response.text?.trim() || text;
+  } catch (error) {
+    console.error("Error translating review:", error);
+    return text;
+  }
+}
+
+export async function translateReviewsBatch(reviews: BookingReview[], targetLanguage: string) {
+  if (reviews.length === 0) return reviews;
+  
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
+    console.error("Translation error: No valid API key found.");
+    return reviews;
+  }
+  const ai = new GoogleGenAI({ apiKey });
+  
+  // We'll translate title, positive, negative reviews and property replies
+  const toTranslate = reviews.map((r, i) => ({
+    id: i,
+    title: r.reviewTitle,
+    pos: r.positiveReview,
+    neg: r.negativeReview,
+    reply: r.propertyReply
+  })).filter(r => 
+    (r.title && r.title !== "-") || 
+    (r.pos && r.pos !== "-") || 
+    (r.neg && r.neg !== "-") || 
+    (r.reply && r.reply !== "-")
+  );
+
+  if (toTranslate.length === 0) return reviews;
+
+  // Split into chunks of 10 to avoid token limits
+  const chunkSize = 10;
+  const updatedReviews = [...reviews];
+
+  for (let i = 0; i < toTranslate.length; i += chunkSize) {
+    const chunk = toTranslate.slice(i, i + chunkSize);
+    
+    const prompt = `
+      You are a professional translator specializing in travel and hospitality. 
+      Translate the following hostel review segments to ${targetLanguage}.
+      
+      CRITICAL RULES:
+      1. Every response field ("title", "pos", "neg", "reply") MUST be translated into ${targetLanguage} regardless of the source language.
+      2. If the source text contains encoding artifacts (like "Ã³", "Ã±", "Ã"), interpret them correctly as their intended characters (e.g., "Ã³" is "ó") before translating.
+      3. If a segment is already in ${targetLanguage}, you may return it as is, but ensure any encoding errors are fixed.
+      4. DO NOT include any text other than the JSON array in your response.
+      5. Maintain the original sentiment and intensity of the guest's feedback.
+      
+      Data to translate (JSON array):
+      ${JSON.stringify(chunk.map(t => ({ title: t.title, pos: t.pos, neg: t.neg, reply: t.reply })))}
+    `;
+
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                pos: { type: Type.STRING },
+                neg: { type: Type.STRING },
+                reply: { type: Type.STRING },
+                sentiment: { type: Type.STRING, enum: ["positive", "negative", "neutral"] }
+              },
+              required: ["title", "pos", "neg", "reply", "sentiment"]
+            }
+          }
+        }
+      });
+
+      const results = validateTranslationArray(safeParseJSON(response.text));
+      if (results.length === 0) {
+        console.warn(`Batch translation: dropped malformed response for chunk ${i}`);
+        continue;
+      }
+      
+      chunk.forEach((item, index) => {
+        const r = results[index];
+        if (r) {
+          // NOTE: sentiment is intentionally NOT updated here. Translations should
+          // never re-write sentiment computed against the original-language text
+          // -- multi-hop translations (en->es->fr) drift, so sentiment is pinned
+          // and only updated by analyzeSentimentBatch on the original.
+          updatedReviews[item.id] = {
+            ...updatedReviews[item.id],
+            translatedTitle: r.title,
+            translatedPositive: r.pos,
+            translatedNegative: r.neg,
+            translatedReply: r.reply,
+          };
+        }
+      });
+    } catch (error) {
+      console.error(`Batch translation error for chunk ${i}:`, error);
+    }
+  }
+
+  return updatedReviews;
+}
+
+export async function categorizeNegativeReviews(reviews: BookingReview[], targetLanguage: string = "English") {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
+    throw new Error("No valid API key found. Please configure your GEMINI_API_KEY.");
+  }
+  const ai = new GoogleGenAI({ apiKey });
+  
+  const negativeText = reviews
+    .filter(r => r.reviewScore <= 6)
+    .slice(0, 30) // Sample for context
+    .map(r => r.translatedNegative || r.negativeReview)
+    .filter(t => t && t.length > 10)
+    .join("\n---\n");
+
+  if (!negativeText) return null;
+
+  const prompt = `
+    Analyze the following negative feedback from hostel guests. 
+    Categorize the issues into the following themes and provide a count of how many reviews mention each theme (estimate based on the provided text).
+    Themes: Cleanliness, Noise, Facilities, Staff, Location, Value.
+    Also, provide a short 1-2 sentence summary of the most critical recurring issues.
+    
+    IMPORTANT: Return the "name" of each category and the "summary" in ${targetLanguage}.
+    
+    Feedback:
+    ${negativeText}
+
+    Return a JSON object with "categories" (array of {name, count}) and "summary" (string).
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            categories: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  count: { type: Type.NUMBER }
+                },
+                required: ["name", "count"]
+              }
+            },
+            summary: { type: Type.STRING }
+          },
+          required: ["categories", "summary"]
+        }
+      }
+    });
+
+    const validated = validateCategoriesPayload(safeParseJSON(response.text));
+    if (!validated) {
+      console.warn("Categorize: dropped malformed response");
+      return null;
+    }
+    return validated;
+  } catch (error) {
+    console.error("Error categorizing reviews:", error);
+    return null;
+  }
+}
+
+export async function analyzeSentimentBatch(reviews: BookingReview[]) {
+  if (reviews.length === 0) return reviews;
+  
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+  
+  // Sentiment is pinned to ORIGINAL-language text. We read from reviewTitle /
+  // positiveReview / negativeReview (never the translated* variants) and skip
+  // any review whose sentiment is already set, so re-translation passes don't
+  // re-trigger sentiment analysis on stale-but-fine data.
+  const toAnalyze = reviews
+    .map((r, i) => ({
+      id: i,
+      title: r.reviewTitle,
+      pos: r.positiveReview,
+      neg: r.negativeReview,
+      hasSentiment: !!r.sentiment,
+    }))
+    .filter(r => !r.hasSentiment && (r.pos || r.neg));
+
+  if (toAnalyze.length === 0) return reviews;
+
+  const chunkSize = 15;
+  const updatedReviews = [...reviews];
+
+  for (let i = 0; i < toAnalyze.length; i += chunkSize) {
+    const chunk = toAnalyze.slice(i, i + chunkSize);
+    
+    const prompt = `
+      Determine the overall sentiment of each review (positive, negative, or neutral).
+      Return a JSON array of objects with "sentiment" keys in the same order.
+      "sentiment" must be one of: "positive", "negative", "neutral".
+      
+      Data:
+      ${JSON.stringify(chunk.map(t => ({ title: t.title, pos: t.pos, neg: t.neg })))}
+    `;
+
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                sentiment: { type: Type.STRING, enum: ["positive", "negative", "neutral"] }
+              },
+              required: ["sentiment"]
+            }
+          }
+        }
+      });
+
+      const results = validateSentimentArray(safeParseJSON(response.text));
+      if (results.length === 0) {
+        console.warn(`Sentiment: dropped malformed response for chunk ${i}`);
+        continue;
+      }
+      
+      chunk.forEach((item, index) => {
+        const r = results[index];
+        if (r) {
+          updatedReviews[item.id] = {
+            ...updatedReviews[item.id],
+            sentiment: r.sentiment
+          };
+        }
+      });
+    } catch (error) {
+      console.error(`Sentiment analysis error for chunk ${i}:`, error);
+    }
+  }
+
+  return updatedReviews;
+}
+
+/**
+ * Drafts a professional, empathetic reply to a negative review for a hotel/
+ * hostel property manager. Returns the reply text in the requested language.
+ * Returns null when no API key is configured or the call fails.
+ */
+export async function draftReplyToReview(
+  review: BookingReview,
+  targetLanguage: string = "English"
+): Promise<string | null> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
+    console.warn("draftReplyToReview: no API key configured");
+    return null;
+  }
+  const ai = new GoogleGenAI({ apiKey });
+
+  const propertyName = review.property || 'our property';
+  const guestName = review.guestName?.trim() || 'guest';
+  const negativeText = (review.translatedNegative || review.negativeReview || '').slice(0, 1200);
+  const positiveText = (review.translatedPositive || review.positiveReview || '').slice(0, 400);
+  const score = review.reviewScore;
+
+  const prompt = `
+You are a hospitality manager replying to a critical guest review on Booking.com.
+Write a reply in ${targetLanguage} that:
+  1. Thanks the guest by name (use "${guestName}" if it is a real first name, otherwise "you").
+  2. Acknowledges the specific concerns they raised, without making excuses.
+  3. Briefly states what is being done to address each concern (be concrete, not generic).
+  4. Invites them to return so the team can show the improvement.
+  5. Keeps the tone warm, professional, and under 130 words.
+  6. Does NOT promise refunds, discounts, or compensation.
+  7. Does NOT use stock phrases like "your feedback is important to us".
+
+Context:
+  Property: ${propertyName}
+  Score: ${score}/10
+  What the guest liked: ${positiveText || '(none provided)'}
+  What the guest disliked: ${negativeText || '(none provided)'}
+
+Return ONLY the reply text, no preamble, no markdown, no quotation marks.
+`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    });
+    const text = response.text?.trim();
+    if (!text) return null;
+    // Strip accidental wrapping quotes
+    return text.replace(/^["']|["']$/g, '').trim();
+  } catch (err) {
+    console.error("draftReplyToReview failed:", err);
+    return null;
+  }
+}
+
