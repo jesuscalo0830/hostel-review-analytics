@@ -42,3 +42,13 @@ export interface MonthlyTrend {
   month: string;
   score: number;
 }
+
+export interface UploadLogEntry {
+  id: string;
+  fileName: string;
+  uploadedAt: string;   // ISO timestamp
+  rowsParsed: number;
+  rowsAdded: number;
+  platform: string;
+  properties: string[];
+}

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { parseBookingCSV, detectPlatform, parseXLSBuffer } from './utils/csvParser';
-import { BookingReview } from './types';
+import { BookingReview, UploadLogEntry } from './types';
 import { SAMPLE_CSV } from './constants';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateInsights, translateReviewsBatch } from './services/gemini';
@@ -13,6 +13,9 @@ export default function App() {
   const [isLoaded, setIsLoaded] = useState(false);
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
   const [uploadToast, setUploadToast] = useState<{ type: 'success' | 'duplicate'; message: string } | null>(null);
+  const [uploadLog, setUploadLog] = useState<UploadLogEntry[]>(() => {
+    try { return JSON.parse(localStorage.getItem('upload_log') || '[]'); } catch { return []; }
+  });
 
   const showToast = (type: 'success' | 'duplicate', message: string) => {
     setUploadToast({ type, message });
@@ -49,7 +52,7 @@ export default function App() {
     loadData();
   }, []);
 
-  const handleUpload = async (csv: string | ArrayBuffer) => {
+  const handleUpload = async (csv: string | ArrayBuffer, fileName?: string) => {
     try {
       let parsedReviews: BookingReview[];
       let platform: string;
@@ -89,17 +92,35 @@ export default function App() {
         !merged.slice(0, merged.length - parsedReviews.length).some(m => m.reservationNumber && m.reservationNumber === r.reservationNumber)
       ).length);
       const addedCount = merged.length - (merged.length >= parsedReviews.length ? merged.length - parsedReviews.length : 0);
+      let actuallyNew = 0;
       if (parsedReviews.length > 0) {
         const prevLen = merged.length - parsedReviews.filter(r =>
           !merged.find(m => m.reservationNumber === r.reservationNumber && m.reservationNumber)
         ).length;
-        const actuallyNew = merged.length - prevLen;
+        actuallyNew = merged.length - prevLen;
         if (actuallyNew === 0) {
           showToast('duplicate', `${parsedReviews.length} review${parsedReviews.length !== 1 ? 's' : ''} already in the database — no new data added.`);
         } else {
           showToast('success', `${actuallyNew} new review${actuallyNew !== 1 ? 's' : ''} added from ${parsedReviews.length} in file.`);
         }
       }
+
+      // Record upload in log
+      const uniqueProps = Array.from(new Set(parsedReviews.map(r => r.property).filter(Boolean))) as string[];
+      const logEntry: UploadLogEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        fileName: fileName || 'Unknown file',
+        uploadedAt: new Date().toISOString(),
+        rowsParsed: parsedReviews.length,
+        rowsAdded: actuallyNew,
+        platform,
+        properties: uniqueProps,
+      };
+      setUploadLog(prev => {
+        const updated = [logEntry, ...prev];
+        try { localStorage.setItem('upload_log', JSON.stringify(updated)); } catch {}
+        return updated;
+      });
 
       console.info(
         `[upload] Loaded ${parsedReviews.length} ${platform} review(s); ` +
@@ -243,6 +264,7 @@ export default function App() {
               uploadToast={uploadToast}
               onDismissToast={() => setUploadToast(null)}
               cloudSyncError={cloudSyncError}
+              uploadLog={uploadLog}
             />
           </motion.div>
         ) : (

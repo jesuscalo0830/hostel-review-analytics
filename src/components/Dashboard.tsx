@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { BookingReview } from '../types';
+import { BookingReview, UploadLogEntry } from '../types';
 import { calculateAverages } from '../utils/csvParser';
 import { ScoreCard } from './ScoreCard';
 import { ReviewCard } from './ReviewCard';
@@ -30,7 +30,7 @@ import { isValidFeedback } from '../utils/validation';
 
 interface DashboardProps {
     reviews: BookingReview[];
-    onUpload: (csv: string | ArrayBuffer) => void;
+    onUpload: (csv: string | ArrayBuffer, fileName?: string) => void;
     uploadToast?: { type: 'success' | 'duplicate'; message: string } | null;
     onDismissToast?: () => void;
     onClear: () => void;
@@ -41,6 +41,7 @@ interface DashboardProps {
     aiKeyMissing?: boolean;
     /** Set to a string when the most recent Firestore write was denied. */
     cloudSyncError?: string | null;
+    uploadLog?: UploadLogEntry[];
 }
 
 type ReportType =
@@ -56,7 +57,8 @@ type ReportType =
     | 'platform'
     | 'room_performance'
     | 'hostel_comparison'
-    | 'data_grid';
+    | 'data_grid'
+    | 'upload_log';
 
 type Persona = 'admin' | 'staff' | 'guest';
 
@@ -253,7 +255,7 @@ const matchesPropertyName = (r: BookingReview, name: string): boolean => {
     return hay.includes(needle);
 };
 
-export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear, onRepairTranslations, isDarkMode, toggleDarkMode, aiKeyMissing, cloudSyncError, uploadToast, onDismissToast }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear, onRepairTranslations, isDarkMode, toggleDarkMode, aiKeyMissing, cloudSyncError, uploadToast, onDismissToast, uploadLog = [] }) => {
     const [activeReport, setActiveReport] = useState<ReportType>('overall');
     const [persona, setPersona] = useState<Persona>('admin');
     const [isGenerating, setIsGenerating] = useState(false);
@@ -373,7 +375,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
             const reader = new FileReader();
             reader.onload = (event) => {
                 const buffer = event.target?.result as ArrayBuffer;
-                onUpload(buffer);
+                onUpload(buffer, file.name);
             };
             reader.readAsArrayBuffer(file);
         } else {
@@ -401,7 +403,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
                     }
                 }
 
-                onUpload(text);
+                onUpload(text, file.name);
             };
             reader.readAsText(file, 'UTF-8');
         }
@@ -452,6 +454,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
             case 'room_performance': return <RoomPerformanceReport reviews={filteredByDateReviews} />;
             case 'hostel_comparison': return <HostelComparisonReport reviews={dateFilteredReviews} />;
             case 'data_grid': return <ReviewDataGrid reviews={filteredByDateReviews} />;
+            case 'upload_log': return <UploadLogReport entries={uploadLog} />;
             default: return null;
         }
     };
@@ -509,6 +512,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
                                 { id: 'room_performance', icon: <Home className="w-4 h-4" />, label: "Room Performance" },
                                 { id: 'hostel_comparison', icon: <ArrowRightLeft className="w-4 h-4" />, label: "Property Comparison" },
                                 { id: 'data_grid', icon: <Table className="w-4 h-4" />, label: "Raw Data Explorer" },
+                                { id: 'upload_log', icon: <Upload className="w-4 h-4" />, label: "Upload History" },
                             ].map((item, idx) => (
                                 <SidebarItem
                                     key={item.id}
@@ -1065,7 +1069,8 @@ const getReportTitle = (type: ReportType) => {
         platform: 'Booking Platform Performance',
         room_performance: 'Room Performance Analysis',
         hostel_comparison: 'Properties Comparison Dashboard',
-        data_grid: 'Raw Data Explorer'
+        data_grid: 'Raw Data Explorer',
+        upload_log: 'Upload History'
     };
     return titles[type];
 };
@@ -2723,25 +2728,16 @@ const ReviewDataGrid = ({ reviews }: { reviews: BookingReview[] }) => {
     );
 };
 
-const FilterBtn = ({ active, onClick, label, count, color = 'brand' }: any) => {
-    const colors: any = {
-        brand: active ? 'bg-navy text-white shadow-lg shadow-indigo/10' : 'bg-slate-50 text-[var(--text-secondary)] hover:bg-slate-100',
-        emerald: active ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-100' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
-        rose: active ? 'bg-rose-600 text-white shadow-lg shadow-rose-100' : 'bg-rose-50 text-rose-700 hover:bg-rose-100',
-    };
-
-    return (
-        <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={onClick}
-            className={cn(
-                "flex justify-between items-center px-6 py-4 rounded-2xl text-xs font-black uppercase tracking-widest transition-all",
-                colors[color]
-            )}
-        >
-            <span>{label}</span>
-            <span className="ml-4 opacity-40 tabular-nums">{count}</span>
-        </motion.button>
-    );
-};
+// --- Upload History Report ---
+const UploadLogReport = ({ entries }: { entries: UploadLogEntry[] }) => {
+    if (entries.length === 0) {
+        return (
+            <motion.div
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex flex-col items-center justify-center py-24 gap-4 text-[var(--text-secondary)]"
+            >
+                <Upload className="w-12 h-12 opacity-20" />
+                <p className="font-semibold text-lg">No uploads yet</p>
+                <p className="text-sm opacity-60">Each file you upload will appear here with its row count and status.</p>
+    
