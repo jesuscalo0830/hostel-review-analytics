@@ -708,7 +708,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
                             <div className="space-y-2">
                                 <span className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--text-secondary)]">Platform</span>
                                 <div className="flex flex-wrap gap-2">
-                                    {(['all', 'Booking', 'Agoda', 'PMS'] as const).map(p => {
+                                    {(['all', 'Booking', 'Agoda', 'PMS', 'Expedia', 'Google', 'Airbnb', 'Other'] as const).map(p => {
                                         const isActive = platformFilter === p;
                                         const label = p === 'all' ? 'All' : p;
                                         // Hide a platform button if no reviews from that platform exist
@@ -2668,62 +2668,329 @@ const BookingPlatformReport = ({ reviews }: { reviews: BookingReview[] }) => {
     );
 };
 
+const PAGE_SIZE = 50;
+
 const ReviewDataGrid = ({ reviews }: { reviews: BookingReview[] }) => {
-    return (
-        <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="bg-[var(--card-bg)] rounded-[40px] border border-[var(--border-color)] shadow-sm overflow-hidden"
+    const [search, setSearch]           = useState('');
+    const [scoreFilter, setScoreFilter] = useState<'all' | 'low' | 'mid' | 'high'>('all');
+    const [platFilter, setPlatFilter]   = useState('all');
+    const [propFilter, setPropFilter]   = useState('all');
+    const [sortField, setSortField]     = useState<'date' | 'score'>('date');
+    const [sortDir, setSortDir]         = useState<'desc' | 'asc'>('desc');
+    const [page, setPage]               = useState(1);
+    const [selected, setSelected]       = useState<BookingReview | null>(null);
+
+    const platforms  = useMemo(() => ['all', ...Array.from(new Set(reviews.map(r => r.platform || 'Booking')))], [reviews]);
+    const properties = useMemo(() => ['all', ...Array.from(new Set(reviews.map(r => r.property || '').filter(Boolean)))], [reviews]);
+
+    const filtered = useMemo(() => {
+        const q = search.toLowerCase().trim();
+        return reviews
+            .filter(r => {
+                if (q) {
+                    const haystack = [
+                        r.reviewTitle, r.positiveReview, r.negativeReview,
+                        r.translatedTitle, r.translatedPositive, r.translatedNegative,
+                        r.guestName, r.roomName, r.reservationNumber, r.property,
+                    ].join(' ').toLowerCase();
+                    if (!haystack.includes(q)) return false;
+                }
+                if (scoreFilter === 'low'  && r.reviewScore >= 7)  return false;
+                if (scoreFilter === 'mid'  && (r.reviewScore < 7 || r.reviewScore >= 9)) return false;
+                if (scoreFilter === 'high' && r.reviewScore < 9)   return false;
+                if (platFilter !== 'all' && (r.platform || 'Booking') !== platFilter) return false;
+                if (propFilter !== 'all' && (r.property || '') !== propFilter) return false;
+                return true;
+            })
+            .sort((a, b) => {
+                let diff = 0;
+                if (sortField === 'date') diff = (a.reviewDate || '').localeCompare(b.reviewDate || '');
+                else diff = (a.reviewScore || 0) - (b.reviewScore || 0);
+                return sortDir === 'desc' ? -diff : diff;
+            });
+    }, [reviews, search, scoreFilter, platFilter, propFilter, sortField, sortDir]);
+
+    const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+    const pageData   = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+    // reset to page 1 when filters change
+    const prevFilters = React.useRef({ search, scoreFilter, platFilter, propFilter });
+    React.useEffect(() => {
+        const f = prevFilters.current;
+        if (f.search !== search || f.scoreFilter !== scoreFilter || f.platFilter !== platFilter || f.propFilter !== propFilter) {
+            setPage(1);
+            prevFilters.current = { search, scoreFilter, platFilter, propFilter };
+        }
+    }, [search, scoreFilter, platFilter, propFilter]);
+
+    const SortBtn = ({ field, label }: { field: 'date' | 'score'; label: string }) => (
+        <button
+            onClick={() => { if (sortField === field) setSortDir(d => d === 'desc' ? 'asc' : 'desc'); else { setSortField(field); setSortDir('desc'); } }}
+            className={cn("flex items-center gap-1 text-[10px] font-black uppercase tracking-widest transition-colors",
+                sortField === field ? "text-indigo-600" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]")}
         >
-            <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                    <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200">
-                            <th className="px-6 py-5 text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">Date</th>
-                            <th className="px-6 py-5 text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">Score</th>
-                            <th className="px-6 py-5 text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">Guest</th>
-                            <th className="px-6 py-5 text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">Room</th>
-                            <th className="px-6 py-5 text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">Feedback Summary</th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                        {reviews.map((r, i) => (
-                            <tr key={i} className="hover:bg-[var(--bg-main)] transition-colors group">
-                                <td className="px-6 py-5">
-                                    <span className="text-xs font-black text-[var(--text-secondary)] tabular-nums">{r.reviewDate}</span>
-                                </td>
-                                <td className="px-6 py-5">
-                                    <span className={cn(
-                                        "px-3 py-1 rounded-full text-xs font-black tabular-nums",
-                                        r.reviewScore >= 8 ? "bg-emerald-50 text-emerald-700" :
-                                            r.reviewScore >= 6 ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700"
-                                    )}>
-                                        {r.reviewScore}
-                                    </span>
-                                </td>
-                                <td className="px-6 py-5">
-                                    <div className="flex flex-col">
-                                        <span className="text-sm font-black text-[var(--text-primary)]">{r.reservationNumber}</span>
-                                        <span className="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-widest">Res ID</span>
-                                    </div>
-                                </td>
-                                <td className="px-6 py-5">
-                                    <span className="text-xs font-bold text-[var(--text-secondary)]">{r.roomName}</span>
-                                </td>
-                                <td className="px-6 py-5">
-                                    <div className="max-w-md">
-                                        <p className="text-sm font-black text-[var(--text-primary)] truncate mb-1">{r.translatedTitle || r.reviewTitle || 'No Title'}</p>
-                                        <p className="text-xs text-slate-800 line-clamp-1 italic">
-                                            {r.translatedPositive || r.positiveReview ? `+ ${r.translatedPositive || r.positiveReview}` : ''}
-                                            {r.translatedNegative || r.negativeReview ? ` - ${r.translatedNegative || r.negativeReview}` : ''}
-                                        </p>
-                                    </div>
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
+            {label}
+            <span className="opacity-60">{sortField === field ? (sortDir === 'desc' ? '↓' : '↑') : '↕'}</span>
+        </button>
+    );
+
+    return (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+
+            {/* Filter bar */}
+            <div className="bg-[var(--card-bg)] rounded-2xl border border-[var(--border)] p-4 flex flex-wrap gap-3 items-center">
+
+                {/* Search */}
+                <div className="relative flex-1 min-w-[200px]">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-secondary)]" />
+                    <input
+                        type="text"
+                        placeholder="Search reviews, guest, room…"
+                        value={search}
+                        onChange={e => setSearch(e.target.value)}
+                        className="w-full pl-8 pr-3 py-2 text-sm rounded-xl border border-[var(--border)] bg-[var(--bg-main)] text-[var(--text-primary)] placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                    />
+                    {search && (
+                        <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                            <X className="w-3.5 h-3.5" />
+                        </button>
+                    )}
+                </div>
+
+                {/* Score filter */}
+                <div className="flex gap-1">
+                    {([['all','All'], ['high','≥9'], ['mid','7–8'], ['low','<7']] as const).map(([v, label]) => (
+                        <button key={v} onClick={() => setScoreFilter(v)}
+                            className={cn("px-3 py-1.5 rounded-xl text-xs font-black transition-all",
+                                scoreFilter === v
+                                    ? v === 'high' ? 'bg-emerald-500 text-white' : v === 'mid' ? 'bg-amber-400 text-white' : v === 'low' ? 'bg-rose-500 text-white' : 'bg-navy text-white'
+                                    : 'bg-slate-100 text-[var(--text-secondary)] hover:bg-slate-200')}>
+                            {label}
+                        </button>
+                    ))}
+                </div>
+
+                {/* Platform filter */}
+                {platforms.length > 2 && (
+                    <select value={platFilter} onChange={e => setPlatFilter(e.target.value)}
+                        className="px-3 py-2 text-xs font-black rounded-xl border border-[var(--border)] bg-[var(--bg-main)] text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-indigo-300">
+                        {platforms.map(p => <option key={p} value={p}>{p === 'all' ? 'All Platforms' : p}</option>)}
+                    </select>
+                )}
+
+                {/* Property filter */}
+                {properties.length > 2 && (
+                    <select value={propFilter} onChange={e => setPropFilter(e.target.value)}
+                        className="px-3 py-2 text-xs font-black rounded-xl border border-[var(--border)] bg-[var(--bg-main)] text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-indigo-300">
+                        {properties.map(p => <option key={p} value={p}>{p === 'all' ? 'All Properties' : p}</option>)}
+                    </select>
+                )}
+
+                {/* Result count */}
+                <span className="ml-auto text-xs font-black text-[var(--text-secondary)] tabular-nums whitespace-nowrap">
+                    {filtered.length.toLocaleString()} review{filtered.length !== 1 ? 's' : ''}
+                </span>
             </div>
+
+            {/* Table */}
+            <div className="bg-[var(--card-bg)] rounded-[32px] border border-[var(--border)] overflow-hidden">
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                        <thead>
+                            <tr className="bg-slate-50 border-b border-slate-200">
+                                <th className="px-6 py-4"><SortBtn field="date" label="Date" /></th>
+                                <th className="px-6 py-4"><SortBtn field="score" label="Score" /></th>
+                                <th className="px-6 py-4 text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">Platform</th>
+                                <th className="px-6 py-4 text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">Property</th>
+                                <th className="px-6 py-4 text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">Guest / Room</th>
+                                <th className="px-6 py-4 text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">Feedback</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {pageData.length === 0 ? (
+                                <tr><td colSpan={6} className="px-6 py-16 text-center text-sm text-[var(--text-secondary)]">No reviews match your filters.</td></tr>
+                            ) : pageData.map((r, i) => (
+                                <tr key={i} onClick={() => setSelected(r)}
+                                    className="hover:bg-indigo-50/40 transition-colors cursor-pointer group">
+                                    <td className="px-6 py-4">
+                                        <span className="text-xs font-black text-[var(--text-secondary)] tabular-nums">{r.reviewDate}</span>
+                                    </td>
+                                    <td className="px-6 py-4">
+                                        <span className={cn("px-3 py-1 rounded-full text-xs font-black tabular-nums",
+                                            r.reviewScore >= 9 ? "bg-emerald-50 text-emerald-700" :
+                                            r.reviewScore >= 7 ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700")}>
+                                            {r.reviewScore}
+                                        </span>
+                                    </td>
+                                    <td className="px-6 py-4">
+                                        <span className="px-2 py-1 rounded-full text-[10px] font-black bg-indigo-50 text-indigo-700">{r.platform || 'Booking'}</span>
+                                    </td>
+                                    <td className="px-6 py-4">
+                                        <span className="text-xs font-bold text-[var(--text-secondary)] max-w-[120px] truncate block">{r.property || '—'}</span>
+                                    </td>
+                                    <td className="px-6 py-4">
+                                        <div className="flex flex-col">
+                                            <span className="text-xs font-bold text-[var(--text-primary)]">{r.guestName || r.reservationNumber || '—'}</span>
+                                            <span className="text-[10px] text-[var(--text-secondary)] truncate max-w-[120px]">{r.roomName}</span>
+                                        </div>
+                                    </td>
+                                    <td className="px-6 py-4">
+                                        <div className="max-w-sm flex items-center gap-2">
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-xs font-black text-[var(--text-primary)] truncate">{r.translatedTitle || r.reviewTitle || '—'}</p>
+                                                <p className="text-[11px] text-slate-500 line-clamp-1 italic mt-0.5">
+                                                    {(r.translatedPositive || r.positiveReview) ? `+ ${r.translatedPositive || r.positiveReview}` : ''}
+                                                    {(r.translatedNegative || r.negativeReview) ? ` − ${r.translatedNegative || r.negativeReview}` : ''}
+                                                </p>
+                                            </div>
+                                            <span className="opacity-0 group-hover:opacity-40 text-[10px] text-indigo-500 font-black uppercase tracking-widest shrink-0">View</span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+
+                {/* Pagination */}
+                {totalPages > 1 && (
+                    <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100">
+                        <span className="text-xs text-[var(--text-secondary)] tabular-nums">
+                            Page {page} of {totalPages} · rows {((page-1)*PAGE_SIZE)+1}–{Math.min(page*PAGE_SIZE, filtered.length)} of {filtered.length}
+                        </span>
+                        <div className="flex gap-2">
+                            <button onClick={() => setPage(p => Math.max(1, p-1))} disabled={page === 1}
+                                className="px-4 py-2 rounded-xl text-xs font-black bg-slate-100 text-[var(--text-secondary)] hover:bg-slate-200 disabled:opacity-30 transition-all">
+                                ← Prev
+                            </button>
+                            <button onClick={() => setPage(p => Math.min(totalPages, p+1))} disabled={page === totalPages}
+                                className="px-4 py-2 rounded-xl text-xs font-black bg-slate-100 text-[var(--text-secondary)] hover:bg-slate-200 disabled:opacity-30 transition-all">
+                                Next →
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* Review detail modal */}
+            <AnimatePresence>
+                {selected && (
+                    <>
+                        {/* Backdrop */}
+                        <motion.div
+                            key="backdrop"
+                            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                            onClick={() => setSelected(null)}
+                            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50"
+                        />
+                        {/* Drawer */}
+                        <motion.div
+                            key="drawer"
+                            initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
+                            transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+                            className="fixed right-0 top-0 h-full w-full max-w-lg bg-white shadow-2xl z-50 flex flex-col overflow-hidden"
+                        >
+                            {/* Header */}
+                            <div className="flex items-center justify-between px-6 py-5 border-b border-slate-100">
+                                <div className="flex items-center gap-3">
+                                    <span className={cn("px-3 py-1 rounded-full text-sm font-black tabular-nums",
+                                        selected.reviewScore >= 9 ? "bg-emerald-50 text-emerald-700" :
+                                        selected.reviewScore >= 7 ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700")}>
+                                        {selected.reviewScore}
+                                    </span>
+                                    <span className="px-2 py-1 rounded-full text-[10px] font-black bg-indigo-50 text-indigo-700">{selected.platform || 'Booking'}</span>
+                                </div>
+                                <button onClick={() => setSelected(null)} className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100 transition-colors">
+                                    <X className="w-4 h-4 text-slate-500" />
+                                </button>
+                            </div>
+
+                            {/* Scrollable body */}
+                            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+                                {/* Meta */}
+                                <div className="grid grid-cols-2 gap-3">
+                                    {[
+                                        { label: 'Date',     value: selected.reviewDate },
+                                        { label: 'Property', value: selected.property || '—' },
+                                        { label: 'Guest',    value: selected.guestName || selected.reservationNumber || '—' },
+                                        { label: 'Room',     value: selected.roomName || '—' },
+                                        { label: 'Res ID',   value: selected.reservationNumber || '—' },
+                                        { label: 'Sentiment',value: selected.sentiment || '—' },
+                                    ].map(({ label, value }) => (
+                                        <div key={label} className="bg-slate-50 rounded-xl px-4 py-3">
+                                            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-0.5">{label}</p>
+                                            <p className="text-sm font-bold text-slate-800 break-words">{value}</p>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Scores */}
+                                {(selected.staff > 0 || selected.cleanliness > 0) && (
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Category Scores</p>
+                                        <div className="grid grid-cols-3 gap-2">
+                                            {[
+                                                { label: 'Staff',    value: selected.staff },
+                                                { label: 'Clean',    value: selected.cleanliness },
+                                                { label: 'Location', value: selected.location },
+                                                { label: 'Facilities', value: selected.facilities },
+                                                { label: 'Comfort',  value: selected.comfort },
+                                                { label: 'Value',    value: selected.valueForMoney },
+                                            ].filter(s => s.value > 0).map(({ label, value }) => (
+                                                <div key={label} className="bg-slate-50 rounded-xl px-3 py-2 text-center">
+                                                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">{label}</p>
+                                                    <p className="text-lg font-black tabular-nums text-slate-800">{value}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Title */}
+                                {(selected.translatedTitle || selected.reviewTitle) && (
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Title</p>
+                                        <p className="text-base font-black text-slate-900">{selected.translatedTitle || selected.reviewTitle}</p>
+                                        {selected.translatedTitle && selected.reviewTitle && selected.translatedTitle !== selected.reviewTitle && (
+                                            <p className="text-xs text-slate-400 italic mt-0.5">Original: {selected.reviewTitle}</p>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Positive */}
+                                {(selected.translatedPositive || selected.positiveReview) && (
+                                    <div className="bg-emerald-50 rounded-2xl p-4">
+                                        <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600 mb-2">👍 Positive</p>
+                                        <p className="text-sm text-emerald-900 leading-relaxed whitespace-pre-wrap">{selected.translatedPositive || selected.positiveReview}</p>
+                                        {selected.translatedPositive && selected.positiveReview && selected.translatedPositive !== selected.positiveReview && (
+                                            <p className="text-xs text-emerald-400 italic mt-2">Original: {selected.positiveReview}</p>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Negative */}
+                                {(selected.translatedNegative || selected.negativeReview) && (
+                                    <div className="bg-rose-50 rounded-2xl p-4">
+                                        <p className="text-[10px] font-black uppercase tracking-widest text-rose-600 mb-2">👎 Negative</p>
+                                        <p className="text-sm text-rose-900 leading-relaxed whitespace-pre-wrap">{selected.translatedNegative || selected.negativeReview}</p>
+                                        {selected.translatedNegative && selected.negativeReview && selected.translatedNegative !== selected.negativeReview && (
+                                            <p className="text-xs text-rose-400 italic mt-2">Original: {selected.negativeReview}</p>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Property reply */}
+                                {selected.propertyReply && selected.propertyReply.trim() && (
+                                    <div className="bg-indigo-50 rounded-2xl p-4">
+                                        <p className="text-[10px] font-black uppercase tracking-widest text-indigo-500 mb-2">💬 Property Reply</p>
+                                        <p className="text-sm text-indigo-900 leading-relaxed whitespace-pre-wrap">{selected.translatedReply || selected.propertyReply}</p>
+                                    </div>
+                                )}
+                            </div>
+                        </motion.div>
+                    </>
+                )}
+            </AnimatePresence>
         </motion.div>
     );
 };
@@ -2740,4 +3007,105 @@ const UploadLogReport = ({ entries }: { entries: UploadLogEntry[] }) => {
                 <Upload className="w-12 h-12 opacity-20" />
                 <p className="font-semibold text-lg">No uploads yet</p>
                 <p className="text-sm opacity-60">Each file you upload will appear here with its row count and status.</p>
-    
+            </motion.div>
+        );
+    }
+
+    const totalParsed = entries.reduce((s, e) => s + e.rowsParsed, 0);
+    const totalAdded  = entries.reduce((s, e) => s + e.rowsAdded,  0);
+    const duplicates  = entries.reduce((s, e) => s + (e.rowsParsed - e.rowsAdded), 0);
+
+    return (
+        <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="space-y-6"
+        >
+            {/* Summary cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {[
+                    { label: 'Files Uploaded',   value: entries.length,  color: 'text-indigo-600'  },
+                    { label: 'Rows Parsed',       value: totalParsed,     color: 'text-emerald-600' },
+                    { label: 'New Reviews Added', value: totalAdded,      color: 'text-sky-600'     },
+                    { label: 'Duplicates Skipped',value: duplicates,      color: 'text-amber-500'   },
+                ].map(stat => (
+                    <div key={stat.label} className="bg-[var(--card-bg)] rounded-2xl border border-[var(--border)] p-5">
+                        <p className="text-xs font-black uppercase tracking-widest text-[var(--text-secondary)] mb-1">{stat.label}</p>
+                        <p className={cn("text-3xl font-black tabular-nums tracking-tighter", stat.color)}>{stat.value.toLocaleString()}</p>
+                    </div>
+                ))}
+            </div>
+
+            {/* Log table */}
+            <div className="bg-[var(--card-bg)] rounded-2xl border border-[var(--border)] overflow-hidden">
+                <div className="px-6 py-4 border-b border-[var(--border)]">
+                    <h3 className="text-sm font-black uppercase tracking-widest text-[var(--text-secondary)]">Upload History</h3>
+                </div>
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                        <thead>
+                            <tr className="border-b border-[var(--border)]">
+                                {['File Name','Uploaded At','Platform','Properties','Rows Parsed','Added','Duplicates'].map(h => (
+                                    <th key={h} className="px-4 py-3 text-xs font-black uppercase tracking-widest text-[var(--text-secondary)]">{h}</th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {entries.map((entry, idx) => {
+                                const dupes = entry.rowsParsed - entry.rowsAdded;
+                                const uploadedDate = new Date(entry.uploadedAt);
+                                const dateStr = isValid(uploadedDate)
+                                    ? format(uploadedDate, 'MMM d, yyyy h:mm a')
+                                    : entry.uploadedAt;
+                                return (
+                                    <tr key={entry.id} className={cn("border-b border-[var(--border)] hover:bg-slate-50/50 transition-colors", idx % 2 === 0 ? '' : 'bg-slate-50/20')}>
+                                        <td className="px-4 py-3 max-w-[200px]">
+                                            <span className="font-semibold text-sm text-[var(--text-primary)] truncate block" title={entry.fileName}>{entry.fileName}</span>
+                                        </td>
+                                        <td className="px-4 py-3 text-xs text-[var(--text-secondary)] whitespace-nowrap">{dateStr}</td>
+                                        <td className="px-4 py-3">
+                                            <span className="px-2 py-1 rounded-full text-xs font-black bg-indigo-50 text-indigo-700">{entry.platform}</span>
+                                        </td>
+                                        <td className="px-4 py-3 text-xs text-[var(--text-secondary)] max-w-[160px]">
+                                            <span className="truncate block" title={entry.properties.join(', ')}>{entry.properties.length > 0 ? entry.properties.join(', ') : '—'}</span>
+                                        </td>
+                                        <td className="px-4 py-3 text-sm font-black tabular-nums text-[var(--text-primary)]">{entry.rowsParsed}</td>
+                                        <td className="px-4 py-3">
+                                            <span className={cn("text-sm font-black tabular-nums", entry.rowsAdded > 0 ? 'text-emerald-600' : 'text-slate-400')}>{entry.rowsAdded}</span>
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <span className={cn("text-sm font-black tabular-nums", dupes > 0 ? 'text-amber-500' : 'text-slate-400')}>{dupes}</span>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </motion.div>
+    );
+};
+
+const FilterBtn = ({ active, onClick, label, count, color = 'brand' }: any) => {
+    const colors: any = {
+        brand: active ? 'bg-navy text-white shadow-lg shadow-indigo/10' : 'bg-slate-50 text-[var(--text-secondary)] hover:bg-slate-100',
+        emerald: active ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-100' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
+        rose: active ? 'bg-rose-600 text-white shadow-lg shadow-rose-100' : 'bg-rose-50 text-rose-700 hover:bg-rose-100',
+    };
+
+    return (
+        <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={onClick}
+            className={cn(
+                "flex justify-between items-center px-6 py-4 rounded-2xl text-xs font-black uppercase tracking-widest transition-all",
+                colors[color]
+            )}
+        >
+            <span>{label}</span>
+            <span className="ml-4 opacity-40 tabular-nums">{count}</span>
+        </motion.button>
+    );
+};

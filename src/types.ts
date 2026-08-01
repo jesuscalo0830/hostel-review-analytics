@@ -1,4 +1,4 @@
-export type ReviewPlatform = 'Booking' | 'Agoda' | 'PMS' | 'Other';
+export type ReviewPlatform = 'Booking' | 'Agoda' | 'PMS' | 'Expedia' | 'Google' | 'Airbnb' | 'Other';
 
 export interface BookingReview {
   reviewDate: string;
@@ -26,6 +26,12 @@ export interface BookingReview {
   translatedTitle?: string;
   translatedReply?: string;
   sentiment?: 'positive' | 'negative' | 'neutral';
+  /** Guest's country, when the source export provides it. */
+  country?: string;
+  /** e.g. "Solo travelers", "Couples" -- provided by some exports. */
+  travelerType?: string;
+  /** Length of stay in nights, when provided. */
+  nights?: number;
 }
 
 export interface ScoreAverages {

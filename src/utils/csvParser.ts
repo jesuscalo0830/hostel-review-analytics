@@ -31,6 +31,48 @@ const papaOptions = {
 };
 
 /**
+ * Case-insensitive key lookup on a row object. Source exports are wildly
+ * inconsistent about capitalisation ("Review date" vs "Review Date"), so
+ * every parser reads cells through this rather than exact-matching keys.
+ */
+const getCI = (row: any, ...keys: string[]): any => {
+  const lower: Record<string, any> = {};
+  for (const [k, v] of Object.entries(row)) lower[k.toLowerCase().trim()] = v;
+  for (const key of keys) {
+    const val = lower[key.toLowerCase()];
+    if (val !== undefined && val !== '') return val;
+  }
+  return '';
+};
+
+/**
+ * Normalise a platform label from a "Platform" column ("Booking.com",
+ * "Agoda", "Airbnb"...) onto the app's ReviewPlatform union.
+ */
+const normalisePlatformLabel = (raw: any): ReviewPlatform => {
+  const s = String(raw || '').toLowerCase();
+  if (s.includes('booking')) return 'Booking';
+  if (s.includes('agoda')) return 'Agoda';
+  if (s.includes('expedia')) return 'Expedia';
+  if (s.includes('google')) return 'Google';
+  if (s.includes('airbnb')) return 'Airbnb';
+  if (s.includes('pms')) return 'PMS';
+  return 'Other';
+};
+
+/**
+ * True when the header row looks like the "Guest Reviews" consolidated
+ * export: a single free-text `Review Text` column, an `Overall Rating`
+ * (already on a 1-10 scale) and optionally a `Platform` column naming the
+ * source site per row.
+ */
+const isGuestReviewsHeader = (headers: string[]): boolean => {
+  const h = headers.map(k => k.toLowerCase().trim());
+  const has = (needle: string) => h.some(hh => hh.includes(needle));
+  return has('review text') && (has('overall rating') || has('review date'));
+};
+
+/**
  * Inspect the first non-empty header row of a CSV and decide which platform
  * format it represents. Returns 'Booking' for the legacy default and the
  * specific platform when characteristic columns are present.
@@ -39,6 +81,12 @@ export const detectPlatform = (csvString: string): ReviewPlatform => {
   const firstLine = stripBOM(csvString).split('\n')[0] || '';
   const headers = firstLine.toLowerCase();
 
+  // "Guest Reviews" consolidated export -- single Review Text column. The
+  // real platform is per-row (Platform column), so report 'Other' here and
+  // let the row parser assign it.
+  if (isGuestReviewsHeader(firstLine.split(','))) {
+    return 'Other';
+  }
   // PMS-style export: External ID + Rental Name + Address + Verified Email
   if (headers.includes('external id') && headers.includes('rental name') && headers.includes('verified email')) {
     return 'PMS';
@@ -142,6 +190,64 @@ const parsePMSRows = (rows: any[]): BookingReview[] => {
 };
 
 // ----------------------------------------------------------------------
+// "Guest Reviews" consolidated export
+//
+// One row per review with a single free-text `Review Text` column, scores
+// already on a 1-10 scale, and a `Platform` column naming the source site.
+// Shared by the CSV and XLSX paths.
+//
+// Text routing: this format has no positive/negative split, so the guest's
+// own score decides where the text lands -- <= 6 goes to negativeReview so
+// the review surfaces in the Critical Issues / negative-theme reports, above
+// that to positiveReview. Without this, single-field reviews are invisible
+// to every critical-feedback view.
+// ----------------------------------------------------------------------
+
+const NEGATIVE_SCORE_CUTOFF = 6;
+
+export const parseGuestReviewsRows = (
+  rows: any[],
+  property?: string
+): BookingReview[] => {
+  return rows.flatMap((row: any) => {
+    const rawDate = getCI(row, 'Review Date', 'Date', 'Posted Date');
+    const reviewScore = parseScore(
+      getCI(row, 'Overall Rating (/10)', 'Overall Rating', 'Overall Score', 'Review Score', 'Score')
+    );
+    const text = String(getCI(row, 'Review Text', 'Review', 'Comment') || '').trim();
+
+    // Drop spacer / subtotal rows: nothing usable at all.
+    if (!rawDate && reviewScore === 0 && !text) return [];
+
+    const isNegative = reviewScore > 0 && reviewScore <= NEGATIVE_SCORE_CUTOFF;
+
+    return [{
+      reviewDate: parseDateLoose(rawDate),
+      reservationNumber: String(getCI(row, 'Booking ID', 'Reservation Number', 'External ID') || '').trim(),
+      guestName: String(getCI(row, 'Guest Name', 'Reviewer Name', 'Reviewer') || '').trim(),
+      reviewTitle: String(getCI(row, 'Review Title', 'Title') || '').trim(),
+      roomName: String(getCI(row, 'Room Type', 'Room Name', 'Rental Name') || 'General').trim(),
+      positiveReview: isNegative ? '' : text,
+      negativeReview: isNegative ? text : '',
+      reviewScore,
+      staff: parseScore(getCI(row, 'Service', 'Staff')),
+      cleanliness: parseScore(getCI(row, 'Cleanliness')),
+      location: parseScore(getCI(row, 'Location')),
+      facilities: parseScore(getCI(row, 'Facilities')),
+      comfort: parseScore(getCI(row, 'Comfort')),
+      valueForMoney: parseScore(getCI(row, 'Value for Money', 'Value')),
+      propertyReply: String(getCI(row, 'Management Response', 'Property Reply', 'Owner Response', 'Response') || ''),
+      platform: normalisePlatformLabel(getCI(row, 'Platform', 'Source', 'Channel')),
+      property,
+      /** Extra columns this format carries that the core reports don't use yet. */
+      country: String(getCI(row, 'Country') || '').trim() || undefined,
+      travelerType: String(getCI(row, 'Traveler Type', 'Traveller Type') || '').trim() || undefined,
+      nights: parseScore(getCI(row, 'Nights')) || undefined,
+    }];
+  });
+};
+
+// ----------------------------------------------------------------------
 // Public API
 // ----------------------------------------------------------------------
 
@@ -200,6 +306,13 @@ export const parseReviewCSV = (csvString: string): BookingReview[] => {
   const platform = detectPlatform(cleaned);
   const result = Papa.parse(cleaned, papaOptions);
   const rows = result.data as any[];
+
+  // The "Guest Reviews" export is detected from the header row directly --
+  // its per-row Platform column means detectPlatform can't identify it.
+  const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
+  if (isGuestReviewsHeader(headers)) {
+    return tagWithMajorityProperty(parseGuestReviewsRows(rows));
+  }
 
   let parsed: BookingReview[];
   switch (platform) {
@@ -289,16 +402,46 @@ export const calculateAverages = (reviews: BookingReview[]): ScoreAveragesWithCo
 
 const KNOWN_PLATFORM_BANNERS = ['booking.com','agoda','airbnb','expedia','tripadvisor','google'];
 const SKIP_SHEETS = ['summary'];
+/**
+ * Sheet names that carry no property information -- the property has to come
+ * from the Summary sheet or the review text instead of the tab label.
+ */
+const GENERIC_SHEET_NAMES = /^(sheet\d*|reviews?|data|export|all)$/i;
 
-/** Case-insensitive key lookup on a row object. */
-const getCI = (row: any, ...keys: string[]): any => {
-  const lower: Record<string, any> = {};
-  for (const [k, v] of Object.entries(row)) lower[k.toLowerCase().trim()] = v;
-  for (const key of keys) {
-    const val = lower[key.toLowerCase()];
-    if (val !== undefined && val !== '') return val;
-  }
-  return '';
+const MONTH_NAMES = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
+
+/**
+ * True when a sheet name is a period label ("July 2026 Reviews", "Q3 2026")
+ * or a generic tab name, rather than a property name.
+ *
+ * Without this, a monthly export lands every review under a property called
+ * "July 2026 Reviews", polluting the property filter and Property Comparison
+ * report with a bogus segment.
+ */
+const isGenericSheetName = (name: string): boolean => {
+  const n = name.trim();
+  if (GENERIC_SHEET_NAMES.test(n)) return true;
+  if (/\b(19|20)\d{2}\b/.test(n)) return true;   // contains a year
+  if (MONTH_NAMES.test(n) && /review|month|data/i.test(n)) return true;
+  return false;
+};
+
+/**
+ * True when a row is a decorative platform banner ("Booking.com" spanning the
+ * sheet) rather than a data row.
+ *
+ * A banner row has its label in the first cell and nothing else. Requiring the
+ * rest of the row to be empty matters: exports with a real `Platform` column
+ * hold "Booking.com" in the first cell of EVERY row, and the old
+ * first-cell-only check silently discarded the entire file.
+ */
+const isPlatformBannerRow = (row: any): boolean => {
+  const values = Object.values(row);
+  if (values.length === 0) return false;
+  const first = String(values[0] ?? '').toLowerCase().trim();
+  if (!KNOWN_PLATFORM_BANNERS.includes(first)) return false;
+  const rest = values.slice(1).filter(v => String(v ?? '').trim() !== '');
+  return rest.length === 0;
 };
 
 /** Extract property name from sign-off in reply text. */
@@ -307,21 +450,34 @@ const extractPropertyFromReply = (reply: string): string | undefined => {
   return m ? m[1].trim() : undefined;
 };
 
-/** Parse "Jan 27, 2026" or "Oct 2025" style dates to ISO string. */
+/**
+ * Format a Date as YYYY-MM-DD using its LOCAL calendar fields.
+ *
+ * Deliberately not toISOString(): strings like "Jan 27, 2026" and XLSX date
+ * cells parse to local midnight, and toISOString() then converts to UTC,
+ * shifting the date back a day for every timezone east of Greenwich. That
+ * silently moved reviews into the previous month on the trend charts.
+ */
+const toLocalISODate = (d: Date): string => {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
+/** Parse "Jan 27, 2026" or "Oct 2025" style dates to a YYYY-MM-DD string. */
 const parseDateLoose = (raw: any): string => {
   if (!raw) return '';
-  if (raw instanceof Date) return raw.toISOString().split('T')[0];
+  if (raw instanceof Date) return toLocalISODate(raw);
   const s = String(raw).trim();
   // Already ISO
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.split('T')[0];
   // "Jan 27, 2026"
   const full = Date.parse(s);
-  if (!isNaN(full)) return new Date(full).toISOString().split('T')[0];
+  if (!isNaN(full)) return toLocalISODate(new Date(full));
   // "Oct 2025" → use 1st of month
   const m = s.match(/^([A-Za-z]+)\s+(\d{4})$/);
   if (m) {
     const d = Date.parse(`${m[1]} 1, ${m[2]}`);
-    if (!isNaN(d)) return new Date(d).toISOString().split('T')[0];
+    if (!isNaN(d)) return toLocalISODate(new Date(d));
   }
   return s;
 };
@@ -335,12 +491,15 @@ const parseSlashScore = (val: any): number => {
 };
 
 /** Detect which format a sheet uses based on its headers. */
-type SheetFormat = 'standard' | 'tripcom' | 'pms' | 'consolidated-booking' | 'consolidated-agoda' | 'consolidated-airbnb' | 'skip';
+type SheetFormat = 'standard' | 'tripcom' | 'pms' | 'guest-reviews' | 'consolidated-booking' | 'consolidated-agoda' | 'consolidated-airbnb' | 'skip';
 
 const detectSheetFormat = (headers: string[]): SheetFormat => {
   const h = headers.map(k => k.toLowerCase().trim());
   const has = (...keys: string[]) => keys.every(k => h.some(hh => hh.includes(k)));
 
+  // Checked first: this format also has a 'Review Date' column, which would
+  // otherwise fall through to 'standard' and lose the Overall Rating mapping.
+  if (isGuestReviewsHeader(headers)) return 'guest-reviews';
   if (has('star rating')) return 'tripcom';
   if (has('external id') && has('rental name') && has('first name')) return 'pms';
   if (has('hostel') && has('positive review')) return 'consolidated-booking';
@@ -379,7 +538,7 @@ const parsePmsXlsRows = (rows: any[], property: string | undefined): BookingRevi
 const parseStandardRows = (rows: any[], property: string | undefined): BookingReview[] => {
   let detectedProperty = property;
   return rows
-    .filter(row => !KNOWN_PLATFORM_BANNERS.includes(String(Object.values(row)[0] || '').toLowerCase().trim()))
+    .filter(row => !isPlatformBannerRow(row))
     .map(row => {
       const reply = String(getCI(row, 'Property Reply', 'Property reply'));
       if (!detectedProperty && reply) detectedProperty = extractPropertyFromReply(reply);
@@ -523,11 +682,14 @@ export const parseXLSBuffer = async (buffer: ArrayBuffer): Promise<BookingReview
     const format = detectSheetFormat(headers);
     if (format === 'skip') continue;
 
-    const isGenericSheet = /^sheet\d*$/i.test(sheetName.trim());
+    const isGenericSheet = isGenericSheetName(sheetName);
     const sheetProperty = isGenericSheet ? fileProperty : sheetName;
 
     let parsed: BookingReview[] = [];
     switch (format) {
+      case 'guest-reviews':
+        parsed = parseGuestReviewsRows(rows, isGenericSheet ? fileProperty : sheetName);
+        break;
       case 'tripcom':
         parsed = parseTripComRows(rows, fileProperty || sheetProperty);
         break;
@@ -550,6 +712,12 @@ export const parseXLSBuffer = async (buffer: ArrayBuffer): Promise<BookingReview
     }
 
     allReviews.push(...parsed);
+  }
+
+  // If no sheet name / Summary sheet supplied a property, fall back to the
+  // same majority-vote-on-review-text detection the CSV path uses.
+  if (allReviews.length > 0 && !allReviews.some(r => r.property)) {
+    return tagWithMajorityProperty(allReviews);
   }
 
   return allReviews;
