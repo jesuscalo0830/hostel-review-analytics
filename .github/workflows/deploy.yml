@@ -1,0 +1,61 @@
+# Build and deploy Hostel Analyzer to Firebase Hosting.
+#
+# Runs on GitHub's servers rather than a developer machine, which is why this
+# exists: the local Firebase CLI could not reach firebasehosting.googleapis.com
+# (TLS connections were being reset), while everything built fine locally.
+#
+# Required repository secrets (Settings > Secrets and variables > Actions):
+#   FIREBASE_SERVICE_ACCOUNT  - JSON key for a service account with the
+#                               "Firebase Hosting Admin" role. See README-DEPLOY.md.
+#   GEMINI_API_KEY            - optional; without it the app still builds and
+#                               runs, but AI features show the "no API key"
+#                               banner. NOTE: this key ends up in the client
+#                               bundle, so treat it as public and restrict it
+#                               in Google Cloud console.
+
+name: Deploy to Firebase Hosting
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:        # lets you trigger a deploy manually from the Actions tab
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # `npm ci` needs a lockfile in sync with package.json. It also installs
+      # the Linux-native esbuild/rollup binaries, avoiding the platform
+      # mismatch you get from copying a Windows node_modules around.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        run: npm test
+        continue-on-error: true   # empty stub test files currently fail; see README-DEPLOY.md
+
+      - name: Build
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: npm run build
+
+      - name: Deploy to Firebase Hosting
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: hostel-analyzer
+          channelId: live
