@@ -36,3 +36,33 @@ export const isValidFeedback = (t: string | undefined | null): boolean => {
 
   return true;
 };
+
+
+/**
+ * True when a review carries written feedback in EITHER field.
+ *
+ * Critical-issue reports use this instead of checking `negativeReview`
+ * alone. Two reasons:
+ *  1. A 1/10 with no text at all is unactionable -- it drags the average
+ *     down but tells you nothing, so it is excluded from the lists.
+ *  2. Guests on some platforms type their complaint into the "liked" box,
+ *     and formats with a single text column (Agoda, Guest Reviews) put
+ *     everything in one field. Checking only `negativeReview` silently
+ *     dropped those.
+ */
+export const hasWrittenFeedback = (r: {
+  positiveReview?: string;
+  negativeReview?: string;
+}): boolean => isValidFeedback(r.negativeReview) || isValidFeedback(r.positiveReview);
+
+/** The review text to show for a critical review, whichever field holds it. */
+export const criticalFeedbackText = (r: {
+  positiveReview?: string;
+  negativeReview?: string;
+  translatedPositive?: string;
+  translatedNegative?: string;
+}): string => {
+  const neg = r.translatedNegative || r.negativeReview;
+  if (isValidFeedback(neg)) return neg as string;
+  return (r.translatedPositive || r.positiveReview || '') as string;
+};

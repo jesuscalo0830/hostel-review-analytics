@@ -26,7 +26,7 @@ import {
 import { cn } from '../utils/cn';
 import { extractKeywords } from '../utils/sentiment';
 import { PROPERTY_NAMES, PROPERTY_LOCATIONS, resolvePropertyForReview } from '../constants';
-import { isValidFeedback } from '../utils/validation';
+import { isValidFeedback, hasWrittenFeedback, criticalFeedbackText } from '../utils/validation';
 
 interface DashboardProps {
     reviews: BookingReview[];
@@ -1219,7 +1219,7 @@ const RoomPerformanceReport = ({ reviews }: { reviews: BookingReview[] }) => {
 };
 
 const StaffView = ({ reviews, averages }: { reviews: BookingReview[], averages: any }) => {
-    const recentNegatives = reviews.filter(r => r.reviewScore <= 6 && isValidFeedback(r.negativeReview)).slice(0, 3);
+    const recentNegatives = reviews.filter(r => r.reviewScore <= 6 && hasWrittenFeedback(r)).slice(0, 3);
     const recentPositives = reviews.filter(r => r.reviewScore >= 9 && isValidFeedback(r.positiveReview)).slice(0, 3);
 
     return (
@@ -1253,7 +1253,7 @@ const StaffView = ({ reviews, averages }: { reviews: BookingReview[], averages: 
                                 </div>
                                 <div>
                                     <p className="text-rose-900 font-bold text-[10px] uppercase tracking-widest mb-1.5">{r.roomName}</p>
-                                    <p className="text-rose-700 text-sm italic leading-relaxed">"{r.translatedNegative || r.negativeReview}"</p>
+                                    <p className="text-rose-700 text-sm italic leading-relaxed">"{criticalFeedbackText(r)}"</p>
                                 </div>
                             </motion.li>
                         )) : (
@@ -1406,7 +1406,9 @@ const GuestView = ({ reviews, averages }: { reviews: BookingReview[], averages: 
 
 const OverallSatisfactionReport = ({ reviews, averages, setActiveReport, targetLanguage, dateFilter }: { reviews: BookingReview[], averages: any, setActiveReport: (t: ReportType) => void, targetLanguage: string, dateFilter: string }) => {
     const above8 = reviews.filter(r => r.reviewScore >= 8).length;
-    const below6 = reviews.filter(r => r.reviewScore < 6).length;
+    // Only count low scores that actually said something -- a bare 1/10 with
+    // no text is not an "issue to action", it is just a number.
+    const below6 = reviews.filter(r => r.reviewScore < 6 && hasWrittenFeedback(r)).length;
     const above8Percent = Math.round((above8 / reviews.length) * 100);
     const below6Percent = Math.round((below6 / reviews.length) * 100);
 
@@ -1462,8 +1464,8 @@ const OverallSatisfactionReport = ({ reviews, averages, setActiveReport, targetL
 
     const complaintComments = useMemo(() => {
         return topComplaints.map(k => {
-            const review = reviews.find(r => (r.translatedNegative || r.negativeReview)?.toLowerCase().includes(k.word.toLowerCase()));
-            return { keyword: k.word, comment: review?.translatedNegative || review?.negativeReview || '' };
+            const review = reviews.find(r => criticalFeedbackText(r).toLowerCase().includes(k.word.toLowerCase()));
+            return { keyword: k.word, comment: review ? criticalFeedbackText(review) : '' };
         }).filter(c => c.comment);
     }, [topComplaints, reviews]);
 
@@ -1705,7 +1707,7 @@ const OverallSatisfactionReport = ({ reviews, averages, setActiveReport, targetL
                         </button>
                     </div>
                     <ul className="space-y-4">
-                        {reviews.filter(r => r.reviewScore < 6 && isValidFeedback(r.negativeReview)).slice(0, 4).map((r, i) => (
+                        {reviews.filter(r => r.reviewScore < 6 && hasWrittenFeedback(r)).slice(0, 4).map((r, i) => (
                             <motion.li
                                 key={i}
                                 initial={{ opacity: 0, x: 20 }}
@@ -1726,7 +1728,7 @@ const OverallSatisfactionReport = ({ reviews, averages, setActiveReport, targetL
                                             {r.guestName || 'Guest'}{r.reservationNumber && <span className="opacity-70"> * #{r.reservationNumber}</span>}
                                         </p>
                                     )}
-                                    <p className="text-sm text-slate-700 font-medium italic leading-relaxed">"{r.translatedNegative || r.negativeReview}"</p>
+                                    <p className="text-sm text-slate-700 font-medium italic leading-relaxed">"{criticalFeedbackText(r)}"</p>
                                     <CriticalReviewActions review={r} />
                                 </div>
                             </motion.li>
@@ -1891,7 +1893,7 @@ const NegativeExperienceReport = ({ reviews, targetLanguage }: { reviews: Bookin
     const [aiAnalysis, setAiAnalysis] = useState<{ categories: any[], summary: string } | null>(null);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-    const negativeReviews = reviews.filter(r => r.reviewScore <= 6 && isValidFeedback(r.negativeReview));
+    const negativeReviews = reviews.filter(r => r.reviewScore <= 6 && hasWrittenFeedback(r));
 
     const themes = [
         {
@@ -1929,7 +1931,7 @@ const NegativeExperienceReport = ({ reviews, targetLanguage }: { reviews: Bookin
     const themeCounts = themes.map(t => ({
         ...t,
         count: negativeReviews.filter(r =>
-            t.keywords.some(k => (r.translatedNegative || r.negativeReview).toLowerCase().includes(k))
+            t.keywords.some(k => criticalFeedbackText(r).toLowerCase().includes(k))
         ).length
     }));
 
@@ -2062,7 +2064,7 @@ const NegativeExperienceReport = ({ reviews, targetLanguage }: { reviews: Bookin
                                     </div>
                                     <span className="text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">#{r.reservationNumber}</span>
                                 </div>
-                                <p className="text-lg text-slate-800 font-medium italic leading-relaxed">"{r.translatedNegative || r.negativeReview}"</p>
+                                <p className="text-lg text-slate-800 font-medium italic leading-relaxed">"{criticalFeedbackText(r)}"</p>
                                 {r.positiveReview && isValidFeedback(r.positiveReview) && (
                                     <div className="mt-4 pt-4 border-t border-slate-50">
                                         <span className="text-[9px] font-black text-emerald-600 uppercase tracking-widest block mb-1">Also mentioned:</span>
