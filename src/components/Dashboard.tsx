@@ -14,7 +14,7 @@ import {
     MessageSquare, AlertCircle, Target, BarChart3, PieChart as PieChartIcon,
     Languages, Loader2, Smile, Search, ArrowRightLeft, Filter, Sparkles,
     Droplets, Volume2, MapPin, Wrench, Table, RefreshCw, ShieldCheck, Briefcase, UserCircle,
-    CheckCircle2, AlertTriangle, Heart, Menu, X, Sun, Moon, Building2
+    CheckCircle2, AlertTriangle, Heart, Menu, X, Sun, Moon, Building2, BadgeCheck
 } from 'lucide-react';
 import { generateInsights, translateReviewsBatch, analyzeSentimentBatch, categorizeNegativeReviews, draftReplyToReview } from '../services/gemini';
 import { parseRobustDate } from '../utils/dateUtils';
@@ -26,7 +26,7 @@ import {
 import { cn } from '../utils/cn';
 import { extractKeywords } from '../utils/sentiment';
 import { PROPERTY_NAMES, PROPERTY_LOCATIONS, resolvePropertyForReview } from '../constants';
-import { isValidFeedback, hasWrittenFeedback, criticalFeedbackText } from '../utils/validation';
+import { isValidFeedback, hasWrittenFeedback, criticalFeedbackText, isVerifiedStay } from '../utils/validation';
 
 interface DashboardProps {
     reviews: BookingReview[];
@@ -270,6 +270,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
     const [isComparisonMode, setIsComparisonMode] = useState(false);
     const [hostelFilter, setHostelFilter] = useState<string>('all');
     const [platformFilter, setPlatformFilter] = useState<string>('all');
+    const [verifiedFilter, setVerifiedFilter] = useState<'all' | 'verified' | 'unverified'>('all');
 
     // Sync translatedReviews with reviews when reviews change
     useEffect(() => {
@@ -352,9 +353,20 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
             const matchesPlatform = platformFilter === 'all' ||
                 ((r.platform || 'Booking').toLowerCase() === platformFilter.toLowerCase());
 
-            return matchesSearch && matchesHostel && matchesPlatform;
+            const matchesVerified = verifiedFilter === 'all' ||
+                (verifiedFilter === 'verified' ? isVerifiedStay(r) : !isVerifiedStay(r));
+
+            return matchesSearch && matchesHostel && matchesPlatform && matchesVerified;
         });
-    }, [dateFilteredReviews, searchTerm, hostelFilter, platformFilter]);
+    }, [dateFilteredReviews, searchTerm, hostelFilter, platformFilter, verifiedFilter]);
+
+    /** Share of the current set that is backed by a real reservation. */
+    const verifiedStats = useMemo(() => {
+        const total = filteredByDateReviews.length;
+        const verified = filteredByDateReviews.filter(isVerifiedStay).length;
+        return { total, verified, unverified: total - verified,
+                 pct: total > 0 ? Math.round((verified / total) * 100) : 0 };
+    }, [filteredByDateReviews]);
 
     const averages = useMemo(() => calculateAverages(filteredByDateReviews), [filteredByDateReviews]);
 
@@ -731,6 +743,43 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
                                     })}
                                 </div>
                             </div>
+
+                            <div className="h-10 w-px bg-slate-100 hidden lg:block" />
+
+                            <div className="space-y-2">
+                                <span
+                                    className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--text-secondary)]"
+                                    title="Verified = the review carries a booking reference, so the platform confirmed a completed stay. Open platforms such as Google supply none."
+                                >
+                                    Guest Verification
+                                </span>
+                                <div className="flex flex-wrap gap-2">
+                                    {([
+                                        { id: 'all', label: `All (${verifiedStats.total})` },
+                                        { id: 'verified', label: `Verified (${verifiedStats.verified})` },
+                                        { id: 'unverified', label: `Unverified (${verifiedStats.unverified})` },
+                                    ] as const).map(v => {
+                                        const isActive = verifiedFilter === v.id;
+                                        // Hide the unverified button when every review is booking-backed.
+                                        if (v.id === 'unverified' && verifiedStats.unverified === 0) return null;
+                                        return (
+                                            <button
+                                                key={v.id}
+                                                onClick={() => setVerifiedFilter(v.id)}
+                                                className={cn(
+                                                    "px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] transition-all border shadow-sm",
+                                                    isActive
+                                                        ? "bg-emerald-600 border-emerald-600 text-white shadow-lg"
+                                                        : "bg-white text-[var(--text-secondary)] border-slate-200 hover:border-emerald-400"
+                                                )}
+                                            >
+                                                {v.label}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
 
                             <div className="h-10 w-px bg-slate-100 hidden lg:block" />
 
@@ -1252,7 +1301,14 @@ const StaffView = ({ reviews, averages }: { reviews: BookingReview[], averages: 
                                     {r.reviewScore}
                                 </div>
                                 <div>
-                                    <p className="text-rose-900 font-bold text-[10px] uppercase tracking-widest mb-1.5">{r.roomName}</p>
+                                    <p className="text-rose-900 font-bold text-[10px] uppercase tracking-widest mb-1.5">
+                                        {r.roomName}
+                                        {isVerifiedStay(r) && (
+                                            <span title="Verified stay -- linked to a completed reservation." className="inline-flex items-center gap-1 ml-2 text-emerald-700 normal-case tracking-normal font-black">
+                                                <BadgeCheck className="w-3 h-3" />verified
+                                            </span>
+                                        )}
+                                    </p>
                                     <p className="text-rose-700 text-sm italic leading-relaxed">"{criticalFeedbackText(r)}"</p>
                                 </div>
                             </motion.li>
@@ -2062,7 +2118,22 @@ const NegativeExperienceReport = ({ reviews, targetLanguage }: { reviews: Bookin
                                         <span className="text-xs font-black text-[var(--text-primary)] uppercase tracking-widest block mb-1">{reviewLocationLabel(r)}</span>
                                         <p className="text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-[0.2em]">{r.reviewDate}</p>
                                     </div>
-                                    <span className="text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">#{r.reservationNumber}</span>
+                                    {isVerifiedStay(r) ? (
+                                        <span
+                                            title="Verified stay -- this review is linked to a completed reservation on the booking platform."
+                                            className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full"
+                                        >
+                                            <ShieldCheck className="w-3 h-3" />
+                                            Verified #{r.reservationNumber}
+                                        </span>
+                                    ) : (
+                                        <span
+                                            title="Unverified -- no booking reference supplied by the platform."
+                                            className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-slate-500 bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-full"
+                                        >
+                                            Unverified
+                                        </span>
+                                    )}
                                 </div>
                                 <p className="text-lg text-slate-800 font-medium italic leading-relaxed">"{criticalFeedbackText(r)}"</p>
                                 {r.positiveReview && isValidFeedback(r.positiveReview) && (

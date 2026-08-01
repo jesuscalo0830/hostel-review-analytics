@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { BookingReview } from '../types';
-import { Star, ThumbsUp, ThumbsDown, MessageSquare, Languages, Loader2, Smile, Frown, Meh, ArrowRightLeft, MapPin } from 'lucide-react';
+import { Star, ThumbsUp, ThumbsDown, MessageSquare, Languages, Loader2, Smile, Frown, Meh, ArrowRightLeft, MapPin, BadgeCheck, HelpCircle } from 'lucide-react';
 import { resolvePropertyForReview, PROPERTY_LOCATIONS } from '../constants';
 import { cn } from '../utils/cn';
 import { translateReview } from '../services/gemini';
 import { motion, AnimatePresence } from 'motion/react';
-import { isValidFeedback } from '../utils/validation';
+import { isValidFeedback, isVerifiedStay } from '../utils/validation';
 
 interface ReviewCardProps {
   review: BookingReview;
@@ -65,7 +65,9 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({ review, index = 0 }) => 
               <h4 className="text-base md:text-lg font-black text-[var(--text-primary)] tracking-tight leading-tight">
                 {(showOriginal ? review.reviewTitle : (review.translatedTitle || review.reviewTitle)) || "Untitled Review"}
               </h4>
-              {(review.guestName || review.reservationNumber) && (
+              {/* Always rendered: the verified/unverified badge shows even when
+                  the export supplied no guest name or booking reference. */}
+              {true && (
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-2 mb-2">
                   {review.guestName && (
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-700 bg-slate-100 px-2.5 py-1 rounded-full">
@@ -75,6 +77,23 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({ review, index = 0 }) => 
                   {review.reservationNumber && (
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.18em] text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-full">
                       Booking #<span className="font-black tabular-nums ml-0.5">{review.reservationNumber}</span>
+                    </span>
+                  )}
+                  {isVerifiedStay(review) ? (
+                    <span
+                      title="Verified stay -- this review is linked to a completed reservation on the booking platform."
+                      className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full"
+                    >
+                      <BadgeCheck className="w-3 h-3" />
+                      Verified stay
+                    </span>
+                  ) : (
+                    <span
+                      title="Unverified -- no booking reference. Open platforms such as Google accept reviews from anyone, whether or not they stayed."
+                      className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-500 bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-full"
+                    >
+                      <HelpCircle className="w-3 h-3" />
+                      Unverified
                     </span>
                   )}
                 </div>

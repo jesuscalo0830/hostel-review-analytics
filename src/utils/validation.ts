@@ -66,3 +66,24 @@ export const criticalFeedbackText = (r: {
   if (isValidFeedback(neg)) return neg as string;
   return (r.translatedPositive || r.positiveReview || '') as string;
 };
+
+/**
+ * True when a review is tied to a real reservation, i.e. a "verified stay".
+ *
+ * There is no explicit `Verified` column in any supported export. The signal
+ * is the booking reference: Booking.com, Agoda and Expedia only accept a
+ * review from a guest with a completed reservation, and carry that reference
+ * on every row. Open platforms like Google let anyone post and supply no
+ * reference, so those come through unverified.
+ *
+ * Placeholder values ("-", "n/a", "undefined") are treated as absent -- some
+ * exports fill the column rather than leaving it blank.
+ */
+export const isVerifiedStay = (r: { reservationNumber?: string }): boolean => {
+  const id = (r.reservationNumber || '').trim();
+  if (!id) return false;
+  const lower = id.toLowerCase();
+  if (['-', '--', 'n/a', 'na', 'none', 'null', 'undefined', '0'].includes(lower)) return false;
+  // Require at least one alphanumeric character.
+  return /[a-z0-9]/i.test(id);
+};
