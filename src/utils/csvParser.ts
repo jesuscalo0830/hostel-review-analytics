@@ -335,11 +335,25 @@ export const parseReviewCSV = (csvString: string): BookingReview[] => {
   const result = Papa.parse(cleaned, papaOptions);
   const rows = result.data as any[];
 
-  // The "Guest Reviews" export is detected from the header row directly --
-  // its per-row Platform column means detectPlatform can't identify it.
+  // Several formats cannot be identified from detectPlatform's platform
+  // guess alone -- they are recognised from the header row instead. The
+  // XLSX path already dispatches on exactly these, so reuse its detector
+  // rather than maintaining two divergent sets of rules: a consolidated
+  // export saved as .csv must parse the same as the .xlsx version.
   const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
-  if (isGuestReviewsHeader(headers)) {
-    return tagWithMajorityProperty(parseGuestReviewsRows(rows));
+  switch (detectSheetFormat(headers)) {
+    case 'guest-reviews':
+      return tagWithMajorityProperty(parseGuestReviewsRows(rows));
+    case 'consolidated-agoda':
+      return parseConsolidatedAgodaRows(rows);
+    case 'consolidated-booking':
+      return parseConsolidatedBookingRows(rows);
+    case 'consolidated-airbnb':
+      return parseConsolidatedAirbnbRows(rows);
+    case 'tripcom':
+      return tagWithMajorityProperty(parseTripComRows(rows, undefined));
+    default:
+      break;   // fall through to the platform-based parsers below
   }
 
   let parsed: BookingReview[];
