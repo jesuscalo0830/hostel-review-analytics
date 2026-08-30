@@ -61,15 +61,29 @@ const userHasInitialized = (): boolean => {
  */
 export const saveReviews = async (
   reviews: BookingReview[]
-): Promise<{ merged: BookingReview[]; localSaved: number; remoteSaved: number; remoteError?: string }> => {
+): Promise<{
+  merged: BookingReview[];
+  /** Rows appended because no existing review shared their id. */
+  added: number;
+  /** Rows that matched an existing review and replaced it. */
+  updated: number;
+  localSaved: number;
+  remoteSaved: number;
+  remoteError?: string;
+}> => {
   // 1. Merge into localStorage (authoritative)
   const existingLocal = readLocal();
   const merged = [...existingLocal];
+  // Counted here rather than by the caller: only this function can see the
+  // pre-merge state, and comparing against `merged` afterwards always finds
+  // every row present, which made every upload look like a duplicate.
+  let added = 0;
+  let updated = 0;
   reviews.forEach(r => {
     const targetId = idFor(r);
     const idx = merged.findIndex(m => idFor(m) === targetId);
-    if (idx >= 0) merged[idx] = r;
-    else merged.push(r);
+    if (idx >= 0) { merged[idx] = r; updated++; }
+    else { merged.push(r); added++; }
   });
   writeLocal(merged);
 
@@ -96,7 +110,7 @@ export const saveReviews = async (
     );
   }
 
-  return { merged, localSaved: reviews.length, remoteSaved, remoteError };
+  return { merged, added, updated, localSaved: reviews.length, remoteSaved, remoteError };
 };
 
 /**

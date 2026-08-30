@@ -94,24 +94,18 @@ export default function App() {
       // round-trip through fetchReviews (which used to overwrite local with
       // stale Firestore data after a clear).
       try { localStorage.setItem('hostel_user_initialized', 'true'); } catch {}
-      const { merged, remoteSaved, remoteError } = await saveReviews(translated);
+      const { merged, added, updated, remoteSaved, remoteError } = await saveReviews(translated);
       setReviews(merged);
       setCloudSyncError(remoteError || null);
 
-      const newCount = merged.length - (merged.length - parsedReviews.filter(r =>
-        !merged.slice(0, merged.length - parsedReviews.length).some(m => m.reservationNumber && m.reservationNumber === r.reservationNumber)
-      ).length);
-      const addedCount = merged.length - (merged.length >= parsedReviews.length ? merged.length - parsedReviews.length : 0);
-      let actuallyNew = 0;
+      const actuallyNew = added;
       if (parsedReviews.length > 0) {
-        const prevLen = merged.length - parsedReviews.filter(r =>
-          !merged.find(m => m.reservationNumber === r.reservationNumber && m.reservationNumber)
-        ).length;
-        actuallyNew = merged.length - prevLen;
-        if (actuallyNew === 0) {
+        if (added === 0) {
           showToast('duplicate', `${parsedReviews.length} review${parsedReviews.length !== 1 ? 's' : ''} already in the database — no new data added.`);
+        } else if (updated > 0) {
+          showToast('success', `${added} new review${added !== 1 ? 's' : ''} added, ${updated} refreshed, from ${parsedReviews.length} in file.`);
         } else {
-          showToast('success', `${actuallyNew} new review${actuallyNew !== 1 ? 's' : ''} added from ${parsedReviews.length} in file.`);
+          showToast('success', `${added} new review${added !== 1 ? 's' : ''} added from ${parsedReviews.length} in file.`);
         }
       }
 

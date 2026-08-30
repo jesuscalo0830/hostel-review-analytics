@@ -374,6 +374,27 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
         });
     }, [dateFilteredReviews, searchTerm, hostelFilter, platformFilter, verifiedFilter]);
 
+    /**
+     * Earliest and latest review dates in the current set.
+     *
+     * Computed from the actual parseable dates rather than the first and last
+     * array elements: the list is sorted newest-first, and rows with an
+     * unparseable date used to fall back to `new Date()`, which showed today
+     * as one end of the range (e.g. "Aug 30, 2026 to Aug 26, 2026").
+     */
+    const reviewDateBounds = useMemo(() => {
+        const times = filteredByDateReviews
+            .map(r => parseRobustDate(r.reviewDate)?.getTime())
+            .filter((t): t is number => typeof t === 'number' && !Number.isNaN(t));
+        if (times.length === 0) return { from: null, to: null, label: { from: '--', to: '--' } };
+        const from = new Date(Math.min(...times));
+        const to = new Date(Math.max(...times));
+        return {
+            from, to,
+            label: { from: format(from, 'MMM dd, yyyy'), to: format(to, 'MMM dd, yyyy') },
+        };
+    }, [filteredByDateReviews]);
+
     /** Share of the current set that is backed by a real reservation. */
     const verifiedStats = useMemo(() => {
         const total = filteredByDateReviews.length;
@@ -898,8 +919,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
                                     </h1>
                                     <p className="text-slate-800 mt-4 font-medium text-base md:text-lg flex flex-wrap items-center gap-2">
                                         Analyzing <span className="text-[var(--text-primary)] font-bold px-2 py-0.5 bg-indigo/5 rounded-lg">{filteredByDateReviews.length}</span> verified reviews from
-                                        <span className="text-indigo-600 font-bold">{format(parseRobustDate(filteredByDateReviews[filteredByDateReviews.length - 1]?.reviewDate) || new Date(), 'MMM dd, yyyy')}</span> to
-                                        <span className="text-indigo-600 font-bold">{format(parseRobustDate(filteredByDateReviews[0]?.reviewDate) || new Date(), 'MMM dd, yyyy')}</span>
+                                        <span className="text-indigo-600 font-bold">{reviewDateBounds.label.from}</span> to
+                                        <span className="text-indigo-600 font-bold">{reviewDateBounds.label.to}</span>
                                         {searchTerm && <span className="text-[var(--text-secondary)] text-sm italic">matching "{searchTerm}"</span>}
                                     </p>
                                 </div>
