@@ -457,15 +457,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
     };
 
     const dataQuality = useMemo(() => {
-        const total = reviews.length;
-        let invalidDate = 0;
-        let missingScore = 0;
+        // Keep the offending rows, not just the counts: "14 rows have
+        // unparseable dates" is only actionable if you can see which 14 and
+        // what the raw value actually was.
+        const badDates: BookingReview[] = [];
+        const noScore: BookingReview[] = [];
         for (const r of reviews) {
-            if (!parseRobustDate(r.reviewDate)) invalidDate++;
-            if (!(r.reviewScore > 0)) missingScore++;
+            if (!parseRobustDate(r.reviewDate)) badDates.push(r);
+            if (!(r.reviewScore > 0)) noScore.push(r);
         }
-        return { total, invalidDate, missingScore };
+        return {
+            total: reviews.length,
+            invalidDate: badDates.length,
+            missingScore: noScore.length,
+            badDates,
+            noScore,
+        };
     }, [reviews]);
+
+    const [showDataQuality, setShowDataQuality] = useState(false);
 
     const hasData = filteredByDateReviews.length > 0;
 
@@ -1040,13 +1050,87 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
                                     {(dataQuality.invalidDate > 0 || dataQuality.missingScore > 0) && (
                                         <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50/70 px-5 py-4 flex items-start gap-3">
                                             <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-                                            <div className="text-[12px] leading-relaxed text-amber-900">
+                                            <div className="text-[12px] leading-relaxed text-amber-900 w-full">
                                                 <p className="font-bold tracking-wide uppercase text-[10px] text-amber-700 mb-1">Data quality</p>
                                                 {dataQuality.invalidDate > 0 && (
                                                     <p>{dataQuality.invalidDate} of {dataQuality.total} rows have unparseable dates and are excluded from time-based reports.</p>
                                                 )}
                                                 {dataQuality.missingScore > 0 && (
                                                     <p>{dataQuality.missingScore} of {dataQuality.total} rows have no overall score; they are excluded from score averages but still counted in totals.</p>
+                                                )}
+                                                {averages && dataQuality.missingScore > 0 && (
+                                                    <p className="mt-1 font-bold">
+                                                        The {averages.overall} overall score is calculated from {dataQuality.total - dataQuality.missingScore} scored reviews.
+                                                    </p>
+                                                )}
+
+                                                <button
+                                                    onClick={() => setShowDataQuality(v => !v)}
+                                                    className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-[0.15em] text-amber-800 hover:text-amber-950 transition-colors"
+                                                >
+                                                    <ChevronDown className={cn("w-3.5 h-3.5 transition-transform", showDataQuality && "rotate-180")} />
+                                                    {showDataQuality ? 'Hide affected rows' : 'Show affected rows'}
+                                                </button>
+
+                                                {showDataQuality && (
+                                                    <div className="mt-3 space-y-4">
+                                                        {dataQuality.invalidDate > 0 && (
+                                                            <div>
+                                                                <p className="font-black uppercase tracking-[0.15em] text-[10px] text-amber-700 mb-1.5">
+                                                                    Unparseable dates ({dataQuality.invalidDate})
+                                                                </p>
+                                                                <div className="max-h-52 overflow-y-auto rounded-xl border border-amber-200 bg-white/70">
+                                                                    <table className="w-full text-[11px]">
+                                                                        <thead className="text-left text-amber-800 border-b border-amber-100">
+                                                                            <tr>
+                                                                                <th className="px-3 py-1.5 font-black">Raw date value</th>
+                                                                                <th className="px-3 py-1.5 font-black">Property</th>
+                                                                                <th className="px-3 py-1.5 font-black">Guest</th>
+                                                                                <th className="px-3 py-1.5 font-black">Platform</th>
+                                                                            </tr>
+                                                                        </thead>
+                                                                        <tbody>
+                                                                            {dataQuality.badDates.slice(0, 100).map((r, i) => (
+                                                                                <tr key={i} className="border-b border-amber-50 last:border-0">
+                                                                                    <td className="px-3 py-1.5 font-mono text-rose-700">
+                                                                                        {r.reviewDate ? `"${r.reviewDate}"` : '(empty)'}
+                                                                                    </td>
+                                                                                    <td className="px-3 py-1.5">{resolvePropertyForReview(r) || '--'}</td>
+                                                                                    <td className="px-3 py-1.5">{r.guestName || '--'}</td>
+                                                                                    <td className="px-3 py-1.5">{r.platform || '--'}</td>
+                                                                                </tr>
+                                                                            ))}
+                                                                        </tbody>
+                                                                    </table>
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {dataQuality.missingScore > 0 && (
+                                                            <div>
+                                                                <p className="font-black uppercase tracking-[0.15em] text-[10px] text-amber-700 mb-1.5">
+                                                                    No overall score ({dataQuality.missingScore}) -- grouped by platform
+                                                                </p>
+                                                                <div className="flex flex-wrap gap-2">
+                                                                    {Object.entries(
+                                                                        dataQuality.noScore.reduce((acc: Record<string, number>, r) => {
+                                                                            const k = r.platform || 'Unknown';
+                                                                            acc[k] = (acc[k] || 0) + 1;
+                                                                            return acc;
+                                                                        }, {})
+                                                                    ).sort((a, b) => (b[1] as number) - (a[1] as number)).map(([plat, n]) => (
+                                                                        <span key={plat} className="px-2.5 py-1 rounded-full bg-white/80 border border-amber-200 font-bold">
+                                                                            {plat}: {n}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                                <p className="mt-1.5 text-[11px] opacity-80">
+                                                                    Platforms such as Google and Airbnb publish review text without a
+                                                                    numeric rating, so these rows are expected rather than broken.
+                                                                </p>
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                 )}
                                             </div>
                                         </div>
