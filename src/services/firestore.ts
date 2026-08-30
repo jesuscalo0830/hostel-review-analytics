@@ -12,10 +12,12 @@ const LOCAL_STORAGE_KEY = "hostel_reviews_fallback";
 const USER_INITIALIZED_KEY = "hostel_user_initialized";
 
 const idFor = (review: BookingReview): string => {
-  let id = review.reservationNumber && review.reservationNumber !== "undefined"
-    ? review.reservationNumber
+  const resNum = (review.reservationNumber || '').trim();
+  const validResNum = resNum && !['undefined', 'null', '-', '--', 'n/a', 'na'].includes(resNum.toLowerCase());
+  let id = validResNum
+    ? resNum
     : btoa(encodeURIComponent(
-        `${review.reviewDate}-${review.reviewTitle}-${review.reviewScore}` +
+        `${review.property || ''}-${review.reviewDate}-${review.reviewTitle}-${review.reviewScore}` +
         `-${(review.positiveReview || '').substring(0, 10)}` +
         `-${(review.negativeReview || '').substring(0, 10)}`
       )).substring(0, 28);
@@ -64,7 +66,8 @@ export const saveReviews = async (
   const existingLocal = readLocal();
   const merged = [...existingLocal];
   reviews.forEach(r => {
-    const idx = merged.findIndex(m => m.reservationNumber === r.reservationNumber);
+    const targetId = idFor(r);
+    const idx = merged.findIndex(m => idFor(m) === targetId);
     if (idx >= 0) merged[idx] = r;
     else merged.push(r);
   });

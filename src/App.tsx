@@ -6,7 +6,7 @@ import { SAMPLE_CSV } from './constants';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateInsights, translateReviewsBatch } from './services/gemini';
 import { fetchReviews, saveReviews, clearAllReviews } from './services/firestore';
-import { isValidFeedback } from './utils/validation';
+import { isValidFeedback, needsEnglishTranslation } from './utils/validation';
 
 export default function App() {
   const [reviews, setReviews] = useState<BookingReview[]>([]);
@@ -39,6 +39,16 @@ export default function App() {
           await saveReviews(translated);
         } else {
           setReviews(storedReviews);
+
+          // Auto-translate any stored reviews that contain untranslated non-English text
+          const needsFix = storedReviews.filter(needsEnglishTranslation);
+          if (needsFix.length > 0 && process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY') {
+            console.info(`[auto-translate] Found ${needsFix.length} untranslated non-English review(s). Auto-translating...`);
+            translateReviewsBatch(needsFix, "English").then(async (fixed) => {
+              const { merged } = await saveReviews(fixed);
+              setReviews(merged);
+            }).catch(err => console.warn("[auto-translate] background translation skipped:", err));
+          }
         }
       } catch (error) {
         console.error("Error loading reviews from Firestore:", error);
@@ -147,28 +157,14 @@ export default function App() {
 
   const handleRepairTranslations = async () => {
     try {
-      const needsTranslation = reviews.filter(r => {
-        const hasFeedback = isValidFeedback(r.positiveReview) || isValidFeedback(r.negativeReview);
-        if (!hasFeedback) return false;
-
-        // Needs repair if translation is missing
-        if (!r.translatedPositive && !r.translatedNegative) return true;
-
-        // Needs repair if translation failed (result is still non-English)
-        // Check for non-ASCII characters (covers Japanese, Spanish accents, etc.)
-        const hasNonEnglish = (text: string) => /[^\x00-\x7F]/.test(text);
-        const posNeedsFix = r.positiveReview && hasNonEnglish(r.positiveReview) && (!r.translatedPositive || hasNonEnglish(r.translatedPositive));
-        const negNeedsFix = r.negativeReview && hasNonEnglish(r.negativeReview) && (!r.translatedNegative || hasNonEnglish(r.translatedNegative));
-        
-        return posNeedsFix || negNeedsFix;
-      });
+      const needsTranslation = reviews.filter(needsEnglishTranslation);
       
       if (needsTranslation.length === 0) {
-        alert("All reviews appear to be correctly translated!");
+        alert("All non-English reviews appear to be correctly translated to English!");
         return;
       }
 
-      if (!window.confirm(`Found ${needsTranslation.length} reviews that may need translation repair. Sync now?`)) {
+      if (!window.confirm(`Found ${needsTranslation.length} non-English review(s) requiring translation repair. Convert to English now?`)) {
         return;
       }
 
@@ -220,9 +216,15 @@ export default function App() {
     if (window.confirm("Are you sure you want to clear all data from the database?")) {
       await clearAllReviews();
       // Mark the user as initialized so we don't re-seed SAMPLE_CSV on the next
-      // page load. Without this flag the dashboard would silently undo the clear.
-      try { localStorage.setItem('hostel_user_initialized', 'true'); } catch {}
+      // page load. Also reset local upload logs and action item states.
+      try {
+        localStorage.setItem('hostel_user_initialized', 'true');
+        localStorage.removeItem('upload_log');
+        localStorage.removeItem('hostel_action_items_status');
+        localStorage.removeItem('hostel_handled_review_ids');
+      } catch {}
       setReviews([]);
+      setUploadLog([]);
     }
   };
 

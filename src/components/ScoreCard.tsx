@@ -14,6 +14,8 @@ interface ScoreCardProps {
   sampleSize?: number;
   /** Optional total -- when provided alongside sampleSize, rendered as "87/100". */
   sampleTotal?: number;
+  /** Optional period-over-period delta score change (e.g. +0.4 or -0.2). */
+  delta?: number;
 }
 
 export const ScoreCard: React.FC<ScoreCardProps> = ({
@@ -25,6 +27,7 @@ export const ScoreCard: React.FC<ScoreCardProps> = ({
   index = 0,
   sampleSize,
   sampleTotal,
+  delta,
 }) => {
   const showSample = typeof sampleSize === 'number' && sampleSize >= 0;
   const lowSample = showSample && (sampleSize as number) > 0 && (sampleSize as number) < 20;
@@ -53,11 +56,27 @@ export const ScoreCard: React.FC<ScoreCardProps> = ({
       </div>
       <div>
         <p className="text-xs font-bold text-[var(--text-secondary)] uppercase tracking-widest mb-2">{label}</p>
-        <div className="flex items-baseline gap-1">
-          <h3 className="text-4xl font-black text-[var(--text-primary)] tracking-tighter">
-            {score}
-          </h3>
-          {isPercentage && <span className="text-xl font-black text-slate-300">%</span>}
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="flex items-baseline gap-1">
+            <h3 className="text-4xl font-black text-[var(--text-primary)] tracking-tighter">
+              {score}
+            </h3>
+            {isPercentage && <span className="text-xl font-black text-slate-300">%</span>}
+          </div>
+
+          {typeof delta === 'number' && !isNaN(delta) && (
+            <div
+              className={cn(
+                "inline-flex items-center gap-0.5 px-2.5 py-1 rounded-full text-xs font-black tracking-tight border",
+                delta > 0 ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+                delta < 0 ? "bg-rose-50 text-rose-700 border-rose-200" :
+                "bg-slate-100 text-slate-600 border-slate-200"
+              )}
+            >
+              <span>{delta > 0 ? `+${delta}` : delta}</span>
+              <span>{delta > 0 ? '↗' : delta < 0 ? '↘' : '—'}</span>
+            </div>
+          )}
         </div>
         {showSample && (
           <p className="mt-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--text-secondary)] tabular-nums">

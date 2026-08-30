@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { BookingReview } from '../types';
-import { Star, ThumbsUp, ThumbsDown, MessageSquare, Languages, Loader2, Smile, Frown, Meh, ArrowRightLeft, MapPin, BadgeCheck, HelpCircle } from 'lucide-react';
+import { Star, ThumbsUp, ThumbsDown, MessageSquare, Languages, Loader2, Smile, Frown, Meh, ArrowRightLeft, MapPin, BadgeCheck, HelpCircle, Sparkles, Copy, Check } from 'lucide-react';
 import { resolvePropertyForReview, PROPERTY_LOCATIONS } from '../constants';
 import { cn } from '../utils/cn';
-import { translateReview } from '../services/gemini';
+import { translateReview, draftReplyToReview } from '../services/gemini';
 import { motion, AnimatePresence } from 'motion/react';
 import { isValidFeedback, isVerifiedStay } from '../utils/validation';
+import { formatDisplayDate } from '../utils/dateUtils';
 
 interface ReviewCardProps {
   review: BookingReview;
@@ -16,8 +17,36 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({ review, index = 0 }) => 
   const [isTranslating, setIsTranslating] = useState(false);
   const [localTranslatedPos, setLocalTranslatedPos] = useState<string | null>(null);
   const [localTranslatedNeg, setLocalTranslatedNeg] = useState<string | null>(null);
-
   const [showOriginal, setShowOriginal] = useState(false);
+
+  // AI Reply Generator state
+  const [isDraftingReply, setIsDraftingReply] = useState(false);
+  const [aiReplyText, setAiReplyText] = useState<string | null>(null);
+  const [copiedReply, setCopiedReply] = useState(false);
+
+  const handleDraftReply = async () => {
+    if (isDraftingReply) return;
+    setIsDraftingReply(true);
+    try {
+      const reply = await draftReplyToReview(review, "English");
+      if (reply) {
+        setAiReplyText(reply);
+      } else {
+        alert("Could not generate AI reply. Make sure GEMINI_API_KEY is configured.");
+      }
+    } catch (e) {
+      console.error("AI reply error:", e);
+    } finally {
+      setIsDraftingReply(false);
+    }
+  };
+
+  const handleCopyReply = () => {
+    if (!aiReplyText) return;
+    navigator.clipboard.writeText(aiReplyText);
+    setCopiedReply(true);
+    setTimeout(() => setCopiedReply(false), 2000);
+  };
 
   const translatedPos = review.translatedPositive || localTranslatedPos;
   const translatedNeg = review.translatedNegative || localTranslatedNeg;
@@ -99,19 +128,22 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({ review, index = 0 }) => 
                 </div>
               )}
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
-                <span className="text-[9px] md:text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">{review.reviewDate}</span>
+                <span className="text-[9px] md:text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">{formatDisplayDate(review.reviewDate)}</span>
                 <span className="w-1 h-1 rounded-full bg-slate-200" />
                 <span className="text-[9px] md:text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-widest">{review.roomName}</span>
                 {(() => {
                   const propertyName = resolvePropertyForReview(review);
                   if (!propertyName) return null;
+                  const locationStr = (PROPERTY_LOCATIONS as Record<string, string>)[propertyName];
                   return (
                     <>
                       <span className="hidden sm:inline w-1 h-1 rounded-full bg-slate-200" />
                       <span className="inline-flex items-center gap-1.5 text-[9px] md:text-[10px] font-black uppercase tracking-widest text-indigo-600">
                         <MapPin className="w-3 h-3" />
                         {propertyName}
-                        <span className="text-[var(--text-secondary)] font-bold normal-case tracking-normal opacity-70 ml-1">{PROPERTY_LOCATIONS[propertyName]}</span>
+                        {locationStr && (
+                          <span className="text-[var(--text-secondary)] font-bold normal-case tracking-normal opacity-70 ml-1">{locationStr}</span>
+                        )}
                       </span>
                     </>
                   );
@@ -177,6 +209,17 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({ review, index = 0 }) => 
                 {isTranslating ? "Translating..." : "Translate to English"}
               </motion.button>
             )}
+
+            <motion.button 
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={handleDraftReply}
+              disabled={isDraftingReply}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-[10px] font-black uppercase tracking-widest hover:opacity-90 transition-all shadow-md shadow-purple-500/20 disabled:opacity-50"
+            >
+              {isDraftingReply ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
+              {isDraftingReply ? "Drafting..." : "Draft AI Reply"}
+            </motion.button>
           </div>
         </div>
 
@@ -235,6 +278,54 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({ review, index = 0 }) => 
             )}
           </div>
         </div>
+
+        {/* AI Drafted Reply Section */}
+        <AnimatePresence>
+          {aiReplyText && (
+            <motion.div
+              initial={{ opacity: 0, y: 20, height: 0 }}
+              animate={{ opacity: 1, y: 0, height: 'auto' }}
+              exit={{ opacity: 0, y: 10, height: 0 }}
+              className="mt-8 pt-8 border-t border-purple-100 bg-gradient-to-br from-purple-50/50 to-indigo-50/30 dark:from-purple-950/20 dark:to-indigo-950/20 p-6 md:p-8 rounded-3xl border border-purple-200/60"
+            >
+              <div className="flex items-center justify-between gap-4 mb-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-purple-600 flex items-center justify-center text-white shadow-sm">
+                    <Sparkles className="w-4 h-4 text-amber-300" />
+                  </div>
+                  <div>
+                    <h5 className="text-xs font-black uppercase tracking-widest text-purple-900 dark:text-purple-300">AI Generated Response Draft</h5>
+                    <span className="text-[9px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wider">Ready to copy & paste</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={handleCopyReply}
+                    className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-md hover:bg-purple-700 transition-all"
+                  >
+                    {copiedReply ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copiedReply ? "Copied!" : "Copy Reply"}
+                  </motion.button>
+                  <button
+                    onClick={() => setAiReplyText(null)}
+                    className="text-slate-400 hover:text-slate-600 text-xs font-bold px-2 py-1"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <textarea
+                value={aiReplyText}
+                onChange={(e) => setAiReplyText(e.target.value)}
+                className="w-full bg-white dark:bg-slate-900 border border-purple-200 dark:border-purple-800/50 rounded-2xl p-4 text-sm font-medium text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-400 leading-relaxed min-h-[100px]"
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </motion.div>
   );

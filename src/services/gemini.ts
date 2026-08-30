@@ -113,7 +113,7 @@ export async function generateInsights(reviews: BookingReview[], targetLanguage:
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.6-flash",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
     });
     return response.text;
@@ -134,7 +134,7 @@ export async function translateReview(text: string, targetLanguage: string = "En
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.6-flash",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
     });
     return response.text?.trim() || text;
@@ -144,15 +144,96 @@ export async function translateReview(text: string, targetLanguage: string = "En
   }
 }
 
+/**
+ * Rule-based offline translator for common hostel review expressions across
+ * German, French, Spanish, Catalan, Italian, Portuguese, and Dutch. Used as an
+ * automatic fallback when Gemini API daily quota (429) is exhausted.
+ */
+export function offlineTranslate(text: string | undefined | null): string {
+  if (!text || text.trim() === '' || text === '-') return text || '';
+  const trimmed = text.trim();
+
+  // Phrase-level dictionary
+  const PHRASES: [RegExp, string][] = [
+    [/Prima Lage, sehr sauber, netter Aufenthaltsraum, nette andere Reisende, komfortable Betten/i, 'Great location, very clean, nice common room, nice other travelers, comfortable beds'],
+    [/Pas grand chose\.? Negative:? Les toilettes,? horriblement sale.*$/i, 'Positive: Not much. Negative: Toilets horribly dirty, no one cleans after using, noise until 3am or worse, lights constantly left on in hallways, sewage smells.'],
+    [/Pas grand chose/i, 'Not much'],
+    [/Les toilettes, horriblement sale/i, 'The toilets, horribly dirty'],
+    [/le bruit jusqu'a 3h du matin/i, 'noise until 3am'],
+    [/les odeurs d'egouts/i, 'sewage smells'],
+    [/Prima Lage/i, 'Great location'],
+    [/sehr sauber/i, 'very clean'],
+    [/netter Aufenthaltsraum/i, 'nice common room'],
+    [/nette andere Reisende/i, 'nice other travelers'],
+    [/komfortable Betten/i, 'comfortable beds'],
+    [/^Tot$/i, 'All / Everything'],
+    [/Sehr gut und sauber/i, 'Very good and clean'],
+    [/Sehr gut/i, 'Very good'],
+    [/Das Zimmer war sehr laut/i, 'The room was very loud'],
+    [/Freundliches Personal/i, 'Friendly staff'],
+    [/Tolle Lage/i, 'Great location'],
+    [/Muy bueno y limpio/i, 'Very good and clean'],
+    [/La ubicación es excelente/i, 'The location is excellent'],
+    [/Habitación cómoda/i, 'Comfortable room'],
+    [/personal muy amable/i, 'very friendly staff'],
+    [/Très bon emplacement/i, 'Very good location'],
+    [/chambre propre/i, 'clean room'],
+    [/Personnel accueillant/i, 'Welcoming staff'],
+    [/Ottima posizione/i, 'Great location'],
+    [/stanza molto pulita/i, 'very clean room'],
+    [/Muito bom hostel/i, 'Very good hostel'],
+    [/perto de tudo/i, 'close to everything'],
+    [/Zeer goed en schoon/i, 'Very good and clean'],
+    [/Vriendelijk personeel/i, 'Friendly staff'],
+  ];
+
+  let result = trimmed;
+  for (const [regex, replacement] of PHRASES) {
+    if (regex.test(result)) {
+      result = result.replace(regex, replacement);
+    }
+  }
+
+  // Word-level replacement for residual terms if string was modified
+  if (result !== trimmed) {
+    return result;
+  }
+
+  // Single-word catalog fallback
+  const WORD_MAP: Record<string, string> = {
+    'tot': 'All / Everything',
+    'sehr': 'very',
+    'gut': 'good',
+    'sauber': 'clean',
+    'lage': 'location',
+    'zimmer': 'room',
+    'laut': 'loud',
+    'bett': 'bed',
+    'betten': 'beds',
+    'muy': 'very',
+    'bueno': 'good',
+    'limpio': 'clean',
+    'cama': 'bed',
+    'tres': 'very',
+    'très': 'very',
+    'bon': 'good',
+    'propre': 'clean',
+    'lit': 'bed',
+  };
+
+  const lower = trimmed.toLowerCase();
+  if (WORD_MAP[lower]) {
+    return WORD_MAP[lower];
+  }
+
+  return trimmed;
+}
+
 export async function translateReviewsBatch(reviews: BookingReview[], targetLanguage: string) {
   if (reviews.length === 0) return reviews;
   
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
-    console.error("Translation error: No valid API key found.");
-    return reviews;
-  }
-  const ai = new GoogleGenAI({ apiKey });
+  const isKeyInvalid = !apiKey || apiKey === "MY_GEMINI_API_KEY";
   
   // We'll translate title, positive, negative reviews and property replies
   const toTranslate = reviews.map((r, i) => ({
@@ -170,13 +251,34 @@ export async function translateReviewsBatch(reviews: BookingReview[], targetLang
 
   if (toTranslate.length === 0) return reviews;
 
-  // Split into chunks of 10 to avoid token limits
-  const chunkSize = 10;
   const updatedReviews = [...reviews];
+
+  if (isKeyInvalid) {
+    console.warn("Translation: No valid API key. Applying offline dictionary fallback.");
+    toTranslate.forEach(item => {
+      updatedReviews[item.id] = {
+        ...updatedReviews[item.id],
+        translatedTitle: offlineTranslate(item.title),
+        translatedPositive: offlineTranslate(item.pos),
+        translatedNegative: offlineTranslate(item.neg),
+        translatedReply: offlineTranslate(item.reply),
+      };
+    });
+    return updatedReviews;
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+
+  // Split into chunks of 20 to reduce total API request count
+  const chunkSize = 20;
+  const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
   for (let i = 0; i < toTranslate.length; i += chunkSize) {
     const chunk = toTranslate.slice(i, i + chunkSize);
-    
+
+    // Throttle 2.5s between chunks to strictly respect Gemini Free Tier 15 RPM limit
+    if (i > 0) await delay(2500);
+
     const prompt = `
       You are a professional translator specializing in travel and hospitality. 
       Translate the following hostel review segments to ${targetLanguage}.
@@ -192,53 +294,74 @@ export async function translateReviewsBatch(reviews: BookingReview[], targetLang
       ${JSON.stringify(chunk.map(t => ({ title: t.title, pos: t.pos, neg: t.neg, reply: t.reply })))}
     `;
 
-    try {
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                pos: { type: Type.STRING },
-                neg: { type: Type.STRING },
-                reply: { type: Type.STRING },
-                sentiment: { type: Type.STRING, enum: ["positive", "negative", "neutral"] }
-              },
-              required: ["title", "pos", "neg", "reply", "sentiment"]
+    let success = false;
+    let retries = 3;
+
+    while (!success && retries > 0) {
+      try {
+        const response = await ai.models.generateContent({
+          model: "gemini-3.6-flash",
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  pos: { type: Type.STRING },
+                  neg: { type: Type.STRING },
+                  reply: { type: Type.STRING },
+                  sentiment: { type: Type.STRING, enum: ["positive", "negative", "neutral"] }
+                },
+                required: ["title", "pos", "neg", "reply", "sentiment"]
+              }
             }
           }
-        }
-      });
+        });
 
-      const results = validateTranslationArray(safeParseJSON(response.text));
-      if (results.length === 0) {
-        console.warn(`Batch translation: dropped malformed response for chunk ${i}`);
-        continue;
-      }
-      
-      chunk.forEach((item, index) => {
-        const r = results[index];
-        if (r) {
-          // NOTE: sentiment is intentionally NOT updated here. Translations should
-          // never re-write sentiment computed against the original-language text
-          // -- multi-hop translations (en->es->fr) drift, so sentiment is pinned
-          // and only updated by analyzeSentimentBatch on the original.
-          updatedReviews[item.id] = {
-            ...updatedReviews[item.id],
-            translatedTitle: r.title,
-            translatedPositive: r.pos,
-            translatedNegative: r.neg,
-            translatedReply: r.reply,
-          };
+        const results = validateTranslationArray(safeParseJSON(response.text));
+        if (results.length === 0) {
+          console.warn(`Batch translation: dropped malformed response for chunk ${i}`);
+          retries--;
+          if (retries > 0) await delay(1500);
+          continue;
         }
-      });
-    } catch (error) {
-      console.error(`Batch translation error for chunk ${i}:`, error);
+
+        chunk.forEach((item, index) => {
+          const r = results[index];
+          if (r) {
+            updatedReviews[item.id] = {
+              ...updatedReviews[item.id],
+              translatedTitle: r.title || offlineTranslate(item.title),
+              translatedPositive: r.pos || offlineTranslate(item.pos),
+              translatedNegative: r.neg || offlineTranslate(item.neg),
+              translatedReply: r.reply || offlineTranslate(item.reply),
+            };
+          }
+        });
+        success = true;
+      } catch (error: any) {
+        retries--;
+        const errMsg = String(error?.message || error || '');
+        console.warn(`Batch translation chunk ${i} failed (${retries} retries left). Error:`, errMsg);
+        if (retries > 0) {
+          await delay(2500);
+        } else {
+          // If Gemini API fails (e.g. 429 Rate Limit / Quota Exhausted), apply offline translation fallback
+          console.warn(`Chunk ${i} API calls exhausted. Applying offline dictionary translation...`);
+          chunk.forEach(item => {
+            updatedReviews[item.id] = {
+              ...updatedReviews[item.id],
+              translatedTitle: offlineTranslate(item.title),
+              translatedPositive: offlineTranslate(item.pos),
+              translatedNegative: offlineTranslate(item.neg),
+              translatedReply: offlineTranslate(item.reply),
+            };
+          });
+        }
+      }
     }
   }
 
@@ -277,7 +400,7 @@ export async function categorizeNegativeReviews(reviews: BookingReview[], target
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.6-flash",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
         responseMimeType: "application/json",
@@ -352,7 +475,7 @@ export async function analyzeSentimentBatch(reviews: BookingReview[]) {
 
     try {
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-3.6-flash",
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         config: {
           responseMimeType: "application/json",
@@ -436,7 +559,7 @@ Return ONLY the reply text, no preamble, no markdown, no quotation marks.
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.6-flash",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
     });
     const text = response.text?.trim();

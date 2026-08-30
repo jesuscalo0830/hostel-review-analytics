@@ -72,6 +72,12 @@ const isGuestReviewsHeader = (headers: string[]): boolean => {
   return has('review text') && (has('overall rating') || has('review date'));
 };
 
+const isTripComHeader = (headers: string[]): boolean => {
+  const h = headers.map(k => k.toLowerCase().trim());
+  const has = (needle: string) => h.some(hh => hh.includes(needle));
+  return has('star rating') || has('posted date') || has('reviewer name') || has('original score');
+};
+
 /**
  * Inspect the first non-empty header row of a CSV and decide which platform
  * format it represents. Returns 'Booking' for the legacy default and the
@@ -107,24 +113,44 @@ export const detectPlatform = (csvString: string): ReviewPlatform => {
 // ----------------------------------------------------------------------
 
 const parseBookingRows = (rows: any[]): BookingReview[] => {
-  return rows.map((row: any) => ({
-    reviewDate: String(row['Check-Out Date'] || row['Review date'] || row['Date'] || '').trim(),
-    reservationNumber: String(row['External ID'] || row['Reservation Number'] || row['Reservation ID'] || row['Reservation number'] || '').trim(),
-    guestName: String(row['Guest name'] || row['Guest Name'] || '').trim(),
-    reviewTitle: String(row['Review title'] || '').trim(),
-    roomName: String(row['Rental Name'] || row['Room name'] || row['Room type'] || row['Accommodation'] || 'General').trim(),
-    positiveReview: String(row['Review'] || row['Positive review'] || row['Positive'] || ''),
-    negativeReview: String(row['Negative review'] || row['Negative'] || ''),
-    reviewScore: parseScore(row['Overall Score'] || row['Review score'] || row['Score']),
-    staff: parseScore(row['Staff Score'] || row['Staff']),
-    cleanliness: parseScore(row['Cleanliness Score'] || row['Cleanliness']),
-    location: parseScore(row['Location Score'] || row['Location']),
-    facilities: parseScore(row['Facilities Score'] || row['Facilities']),
-    comfort: parseScore(row['Comfort Score'] || row['Comfort']),
-    valueForMoney: parseScore(row['Value for money Score'] || row['Value for money'] || row['Value']),
-    propertyReply: String(row['Property Comment'] || row['Property reply'] || row['Response'] || ''),
-    platform: 'Booking' as ReviewPlatform,
-  }));
+  return rows.flatMap((row: any) => {
+    const rawDate = String(row['Check-Out Date'] || row['Review date'] || row['Date'] || '').trim();
+    const resNum = String(row['External ID'] || row['Reservation Number'] || row['Reservation ID'] || row['Reservation number'] || '').trim();
+    
+    // Ignore duplicate header lines from concatenated CSV files
+    if (resNum.toLowerCase().includes('reservation number') || rawDate.toLowerCase().includes('review date')) {
+      return [];
+    }
+
+    const reviewScore = parseScore(row['Overall Score'] || row['Review score'] || row['Score']);
+    const reviewTitle = String(row['Review title'] || '').trim();
+    const positiveReview = String(row['Review'] || row['Positive review'] || row['Positive'] || '');
+    const negativeReview = String(row['Negative review'] || row['Negative'] || '');
+
+    // Skip empty lines
+    if (!rawDate && !resNum && reviewScore === 0 && !reviewTitle && !positiveReview && !negativeReview) {
+      return [];
+    }
+
+    return [{
+      reviewDate: rawDate,
+      reservationNumber: resNum,
+      guestName: String(row['Guest name'] || row['Guest Name'] || '').trim(),
+      reviewTitle,
+      roomName: String(row['Rental Name'] || row['Room name'] || row['Room type'] || row['Accommodation'] || 'General').trim(),
+      positiveReview,
+      negativeReview,
+      reviewScore,
+      staff: parseScore(row['Staff Score'] || row['Staff']),
+      cleanliness: parseScore(row['Cleanliness Score'] || row['Cleanliness']),
+      location: parseScore(row['Location Score'] || row['Location']),
+      facilities: parseScore(row['Facilities Score'] || row['Facilities']),
+      comfort: parseScore(row['Comfort Score'] || row['Comfort']),
+      valueForMoney: parseScore(row['Value for money Score'] || row['Value for money'] || row['Value']),
+      propertyReply: String(row['Property Comment'] || row['Property reply'] || row['Response'] || ''),
+      platform: 'Booking' as ReviewPlatform,
+    }];
+  });
 };
 
 // ----------------------------------------------------------------------
@@ -278,7 +304,9 @@ export const tagWithMajorityProperty = (reviews: BookingReview[]): BookingReview
       (r.positiveReview || '') + ' ' +
       (r.translatedPositive || '') + ' ' +
       (r.negativeReview || '') + ' ' +
-      (r.translatedNegative || '')
+      (r.translatedNegative || '') + ' ' +
+      (r.propertyReply || '') + ' ' +
+      (r.translatedReply || '')
     ).toLowerCase();
     for (const name of PROPERTY_NAMES) {
       if (hay.includes(name.toLowerCase())) {
