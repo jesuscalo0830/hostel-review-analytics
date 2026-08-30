@@ -345,7 +345,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
     }, [translatedReviews, dateFilter, customRange]);
 
     const filteredByDateReviews = useMemo(() => {
-        return dateFilteredReviews.filter(r => {
+        const filtered = dateFilteredReviews.filter(r => {
             const matchesSearch = searchTerm === '' ||
                 (r.reviewTitle?.toLowerCase().includes(searchTerm.toLowerCase())) ||
                 (r.translatedTitle?.toLowerCase().includes(searchTerm.toLowerCase())) ||
