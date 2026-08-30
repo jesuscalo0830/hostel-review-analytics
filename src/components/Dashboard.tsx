@@ -14,10 +14,12 @@ import {
     MessageSquare, AlertCircle, Target, BarChart3, PieChart as PieChartIcon,
     Languages, Loader2, Smile, Search, ArrowRightLeft, Filter, Sparkles,
     Droplets, Volume2, MapPin, Wrench, Table, RefreshCw, ShieldCheck, Briefcase, UserCircle,
-    CheckCircle2, AlertTriangle, Heart, Menu, X, Sun, Moon, Building2, BadgeCheck
+    CheckCircle2, AlertTriangle, Heart, Menu, X, Sun, Moon, Building2, BadgeCheck,
+    Globe, FileSpreadsheet, CheckSquare, ListTodo
 } from 'lucide-react';
 import { generateInsights, translateReviewsBatch, analyzeSentimentBatch, categorizeNegativeReviews, draftReplyToReview } from '../services/gemini';
-import { parseRobustDate } from '../utils/dateUtils';
+import { exportToExcel } from '../utils/excelExporter';
+import { parseRobustDate, formatDisplayDate } from '../utils/dateUtils';
 import {
     format, subDays, subWeeks, subMonths, isWithinInterval,
     startOfDay, endOfDay, isValid, parse, startOfWeek, endOfWeek,
@@ -25,7 +27,7 @@ import {
 } from 'date-fns';
 import { cn } from '../utils/cn';
 import { extractKeywords } from '../utils/sentiment';
-import { PROPERTY_NAMES, PROPERTY_LOCATIONS, resolvePropertyForReview } from '../constants';
+import { PROPERTY_NAMES, PROPERTY_LOCATIONS, resolvePropertyForReview, canonicalPropertyName } from '../constants';
 import { isValidFeedback, hasWrittenFeedback, criticalFeedbackText, isVerifiedStay } from '../utils/validation';
 
 interface DashboardProps {
@@ -58,7 +60,9 @@ type ReportType =
     | 'room_performance'
     | 'hostel_comparison'
     | 'data_grid'
-    | 'upload_log';
+    | 'upload_log'
+    | 'tasks'
+    | 'demographics';
 
 type Persona = 'admin' | 'staff' | 'guest';
 
@@ -76,13 +80,14 @@ const LANGUAGES = [
 
 
 
-// Returns "Property * Location" for reviews where a known property name was
-// detected in the text or roomName, otherwise falls back to the original roomName.
+// Returns "Property * Location • Room" for reviews where property name was
+// detected or set, otherwise falls back to the original roomName.
 const reviewLocationLabel = (r: BookingReview): string => {
-    const prop = resolvePropertyForReview(r);
+    const prop = resolvePropertyForReview(r) || r.property;
     if (prop) {
-        const loc = PROPERTY_LOCATIONS[prop];
-        return loc ? `${prop} * ${loc}` : prop;
+        const loc = (PROPERTY_LOCATIONS as Record<string, string>)[prop];
+        const propStr = loc ? `${prop} * ${loc}` : prop;
+        return (r.roomName && r.roomName !== 'General') ? `${propStr} • ${r.roomName}` : propStr;
     }
     return r.roomName || 'General';
 };
@@ -242,6 +247,9 @@ const CriticalReviewActions: React.FC<{ review: BookingReview }> = ({ review }) 
 // and guests typically mention the property name in review text.
 const matchesPropertyName = (r: BookingReview, name: string): boolean => {
     if (!name || name === 'all') return true;
+    // Canonical match first: "RadZone Hostel" and "Radzone" are one property.
+    const canonical = canonicalPropertyName(r.property);
+    if (canonical && canonicalPropertyName(name) === canonical) return true;
     const needle = name.toLowerCase();
     const hay = (
         (r.roomName || '') + ' ' +
@@ -358,6 +366,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
 
             return matchesSearch && matchesHostel && matchesPlatform && matchesVerified;
         });
+
+        return [...filtered].sort((a, b) => {
+            const dA = parseRobustDate(a.reviewDate)?.getTime() || 0;
+            const dB = parseRobustDate(b.reviewDate)?.getTime() || 0;
+            return dB - dA;
+        });
     }, [dateFilteredReviews, searchTerm, hostelFilter, platformFilter, verifiedFilter]);
 
     /** Share of the current set that is backed by a real reservation. */
@@ -467,6 +481,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
             case 'hostel_comparison': return <HostelComparisonReport reviews={dateFilteredReviews} />;
             case 'data_grid': return <ReviewDataGrid reviews={filteredByDateReviews} />;
             case 'upload_log': return <UploadLogReport entries={uploadLog} />;
+            case 'tasks': return <ActionItemTracker reviews={filteredByDateReviews} />;
+            case 'demographics': return <TravelerSegmentReport reviews={filteredByDateReviews} />;
             default: return null;
         }
     };
@@ -522,6 +538,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
                                 { id: 'monthly_trend', icon: <TrendingUp className="w-4 h-4" />, label: "Trends & Volume" },
                                 { id: 'sentiment', icon: <MessageSquare className="w-4 h-4" />, label: "Guest Voice" },
                                 { id: 'room_performance', icon: <Home className="w-4 h-4" />, label: "Room Performance" },
+                                { id: 'tasks', icon: <CheckCircle2 className="w-4 h-4" />, label: "Action Item Tracker" },
+                                { id: 'demographics', icon: <Globe className="w-4 h-4" />, label: "Traveler Insights" },
                                 { id: 'hostel_comparison', icon: <ArrowRightLeft className="w-4 h-4" />, label: "Property Comparison" },
                                 { id: 'data_grid', icon: <Table className="w-4 h-4" />, label: "Raw Data Explorer" },
                                 { id: 'upload_log', icon: <Upload className="w-4 h-4" />, label: "Upload History" },
@@ -899,7 +917,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
                             </motion.div>
 
                             {/* Quick Actions Bar */}
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
+                            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 md:gap-6">
                                 <QuickActionCard
                                     icon={<Sparkles className="w-5 h-5 text-amber-500" />}
                                     label="AI Analysis"
@@ -908,22 +926,28 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
                                     index={0}
                                 />
                                 <QuickActionCard
-                                    icon={<TrendingUp className="w-5 h-5 text-indigo-500" />}
-                                    label="Trend Overview"
-                                    onClick={() => setActiveReport('monthly_trend')}
+                                    icon={<FileSpreadsheet className="w-5 h-5 text-emerald-600" />}
+                                    label="Export Excel"
+                                    onClick={() => exportToExcel(filteredByDateReviews, averages)}
                                     index={1}
                                 />
                                 <QuickActionCard
-                                    icon={<Filter className="w-5 h-5 text-purple-500" />}
-                                    label="Critical Filter"
-                                    onClick={() => setSearchTerm('negative')}
+                                    icon={<CheckSquare className="w-5 h-5 text-indigo-500" />}
+                                    label="Task Tracker"
+                                    onClick={() => setActiveReport('tasks')}
                                     index={2}
+                                />
+                                <QuickActionCard
+                                    icon={<Globe className="w-5 h-5 text-purple-500" />}
+                                    label="Traveler Insights"
+                                    onClick={() => setActiveReport('demographics')}
+                                    index={3}
                                 />
                                 <QuickActionCard
                                     icon={<Download className="w-5 h-5 text-slate-800 dark:text-slate-200" />}
                                     label="Export PDF"
                                     onClick={() => window.print()}
-                                    index={3}
+                                    index={4}
                                 />
                             </div>
 
@@ -1119,7 +1143,9 @@ const getReportTitle = (type: ReportType) => {
         room_performance: 'Room Performance Analysis',
         hostel_comparison: 'Properties Comparison Dashboard',
         data_grid: 'Raw Data Explorer',
-        upload_log: 'Upload History'
+        upload_log: 'Upload History',
+        tasks: 'Action Item & Maintenance Tracker',
+        demographics: 'Traveler Demographics & Origin Insights'
     };
     return titles[type];
 };
@@ -1268,8 +1294,9 @@ const RoomPerformanceReport = ({ reviews }: { reviews: BookingReview[] }) => {
 };
 
 const StaffView = ({ reviews, averages }: { reviews: BookingReview[], averages: any }) => {
-    const recentNegatives = reviews.filter(r => r.reviewScore <= 6 && hasWrittenFeedback(r)).slice(0, 3);
-    const recentPositives = reviews.filter(r => r.reviewScore >= 9 && isValidFeedback(r.positiveReview)).slice(0, 3);
+    const sortByDateDesc = (list: BookingReview[]) => [...list].sort((a, b) => (parseRobustDate(b.reviewDate)?.getTime() || 0) - (parseRobustDate(a.reviewDate)?.getTime() || 0));
+    const recentNegatives = sortByDateDesc(reviews.filter(r => r.reviewScore <= 6 && hasWrittenFeedback(r))).slice(0, 3);
+    const recentPositives = sortByDateDesc(reviews.filter(r => r.reviewScore >= 9 && isValidFeedback(r.positiveReview))).slice(0, 3);
 
     return (
         <div className="space-y-12">
@@ -1301,10 +1328,10 @@ const StaffView = ({ reviews, averages }: { reviews: BookingReview[], averages: 
                                     {r.reviewScore}
                                 </div>
                                 <div>
-                                    <p className="text-rose-900 font-bold text-[10px] uppercase tracking-widest mb-1.5">
-                                        {r.roomName}
+                                    <p className="text-rose-900 font-bold text-[10px] uppercase tracking-widest mb-1.5 flex items-center gap-1.5 flex-wrap">
+                                        <span>{reviewLocationLabel(r)}</span>
                                         {isVerifiedStay(r) && (
-                                            <span title="Verified stay -- linked to a completed reservation." className="inline-flex items-center gap-1 ml-2 text-emerald-700 normal-case tracking-normal font-black">
+                                            <span title="Verified stay -- linked to a completed reservation." className="inline-flex items-center gap-1 text-emerald-700 normal-case tracking-normal font-black">
                                                 <BadgeCheck className="w-3 h-3" />verified
                                             </span>
                                         )}
@@ -1348,7 +1375,7 @@ const StaffView = ({ reviews, averages }: { reviews: BookingReview[], averages: 
                                     {r.reviewScore}
                                 </div>
                                 <div>
-                                    <p className="text-emerald-900 font-bold text-[10px] uppercase tracking-widest mb-1.5">{r.roomName}</p>
+                                    <p className="text-emerald-900 font-bold text-[10px] uppercase tracking-widest mb-1.5">{reviewLocationLabel(r)}</p>
                                     <p className="text-emerald-700 text-sm italic leading-relaxed">"{r.translatedPositive || r.positiveReview}"</p>
                                 </div>
                             </motion.li>
@@ -1720,7 +1747,7 @@ const OverallSatisfactionReport = ({ reviews, averages, setActiveReport, targetL
                         </h3>
                     </div>
                     <ul className="space-y-4">
-                        {reviews.filter(r => r.reviewScore >= 9 && isValidFeedback(r.positiveReview)).slice(0, 4).map((r, i) => (
+                        {[...reviews].filter(r => r.reviewScore >= 9 && isValidFeedback(r.positiveReview)).sort((a, b) => (parseRobustDate(b.reviewDate)?.getTime() || 0) - (parseRobustDate(a.reviewDate)?.getTime() || 0)).slice(0, 4).map((r, i) => (
                             <motion.li
                                 key={i}
                                 initial={{ opacity: 0, x: -20 }}
@@ -1734,7 +1761,7 @@ const OverallSatisfactionReport = ({ reviews, averages, setActiveReport, targetL
                                 <div className="flex-1">
                                     <div className="flex justify-between items-center mb-1.5">
                                         <span className="text-[9px] font-black text-[var(--text-secondary)] uppercase tracking-widest">{reviewLocationLabel(r)}</span>
-                                        <span className="text-[9px] font-black text-[var(--text-secondary)] opacity-50">{r.reviewDate}</span>
+                                        <span className="text-[9px] font-black text-[var(--text-secondary)] opacity-50">{formatDisplayDate(r.reviewDate)}</span>
                                     </div>
                                     {(r.guestName || r.reservationNumber) && (
                                         <p className="text-[10px] font-bold text-slate-500 mb-1.5 tracking-wide">
@@ -1763,7 +1790,7 @@ const OverallSatisfactionReport = ({ reviews, averages, setActiveReport, targetL
                         </button>
                     </div>
                     <ul className="space-y-4">
-                        {reviews.filter(r => r.reviewScore < 6 && hasWrittenFeedback(r)).slice(0, 4).map((r, i) => (
+                        {[...reviews].filter(r => r.reviewScore < 6 && hasWrittenFeedback(r)).sort((a, b) => (parseRobustDate(b.reviewDate)?.getTime() || 0) - (parseRobustDate(a.reviewDate)?.getTime() || 0)).slice(0, 4).map((r, i) => (
                             <motion.li
                                 key={i}
                                 initial={{ opacity: 0, x: 20 }}
@@ -1777,7 +1804,7 @@ const OverallSatisfactionReport = ({ reviews, averages, setActiveReport, targetL
                                 <div className="flex-1">
                                     <div className="flex justify-between items-center mb-1.5">
                                         <span className="text-[9px] font-black text-[var(--text-secondary)] uppercase tracking-widest">{reviewLocationLabel(r)}</span>
-                                        <span className="text-[9px] font-black text-[var(--text-secondary)] opacity-50">{r.reviewDate}</span>
+                                        <span className="text-[9px] font-black text-[var(--text-secondary)] opacity-50">{formatDisplayDate(r.reviewDate)}</span>
                                     </div>
                                     {(r.guestName || r.reservationNumber) && (
                                         <p className="text-[10px] font-bold text-slate-500 mb-1.5 tracking-wide">
@@ -1949,7 +1976,7 @@ const NegativeExperienceReport = ({ reviews, targetLanguage }: { reviews: Bookin
     const [aiAnalysis, setAiAnalysis] = useState<{ categories: any[], summary: string } | null>(null);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-    const negativeReviews = reviews.filter(r => r.reviewScore <= 6 && hasWrittenFeedback(r));
+    const negativeReviews = [...reviews].filter(r => r.reviewScore <= 6 && hasWrittenFeedback(r)).sort((a, b) => (parseRobustDate(b.reviewDate)?.getTime() || 0) - (parseRobustDate(a.reviewDate)?.getTime() || 0));
 
     const themes = [
         {
@@ -2116,7 +2143,7 @@ const NegativeExperienceReport = ({ reviews, targetLanguage }: { reviews: Bookin
                                 <div className="flex justify-between items-center mb-4">
                                     <div>
                                         <span className="text-xs font-black text-[var(--text-primary)] uppercase tracking-widest block mb-1">{reviewLocationLabel(r)}</span>
-                                        <p className="text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-[0.2em]">{r.reviewDate}</p>
+                                        <p className="text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-[0.2em]">{formatDisplayDate(r.reviewDate)}</p>
                                     </div>
                                     {isVerifiedStay(r) ? (
                                         <span
@@ -2490,7 +2517,7 @@ const StaffPerformanceImpactReport = ({ reviews }: { reviews: BookingReview[] })
                             <div className="flex justify-between items-center mb-6">
                                 <div>
                                     <h4 className="text-xl font-black text-[var(--text-primary)] tracking-tight mb-1">"{r.reviewTitle || "Guest Review"}"</h4>
-                                    <p className="text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-[0.2em]">{reviewLocationLabel(r)} * {r.reviewDate}</p>
+                                    <p className="text-[10px] font-black text-[var(--text-secondary)] uppercase tracking-[0.2em]">{reviewLocationLabel(r)} * {formatDisplayDate(r.reviewDate)}</p>
                                 </div>
                                 <span className="text-[10px] font-black text-[var(--text-secondary)] opacity-50 uppercase tracking-widest">#{r.reservationNumber}</span>
                             </div>
@@ -2886,7 +2913,7 @@ const ReviewDataGrid = ({ reviews }: { reviews: BookingReview[] }) => {
                                 <tr key={i} onClick={() => setSelected(r)}
                                     className="hover:bg-indigo-50/40 transition-colors cursor-pointer group">
                                     <td className="px-6 py-4">
-                                        <span className="text-xs font-black text-[var(--text-secondary)] tabular-nums">{r.reviewDate}</span>
+                                        <span className="text-xs font-black text-[var(--text-secondary)] tabular-nums">{formatDisplayDate(r.reviewDate)}</span>
                                     </td>
                                     <td className="px-6 py-4">
                                         <span className={cn("px-3 py-1 rounded-full text-xs font-black tabular-nums",
@@ -2899,7 +2926,7 @@ const ReviewDataGrid = ({ reviews }: { reviews: BookingReview[] }) => {
                                         <span className="px-2 py-1 rounded-full text-[10px] font-black bg-indigo-50 text-indigo-700">{r.platform || 'Booking'}</span>
                                     </td>
                                     <td className="px-6 py-4">
-                                        <span className="text-xs font-bold text-[var(--text-secondary)] max-w-[120px] truncate block">{r.property || '—'}</span>
+                                        <span className="text-xs font-bold text-[var(--text-secondary)] max-w-[120px] truncate block">{resolvePropertyForReview(r) || r.property || '—'}</span>
                                     </td>
                                     <td className="px-6 py-4">
                                         <div className="flex flex-col">
@@ -2984,7 +3011,7 @@ const ReviewDataGrid = ({ reviews }: { reviews: BookingReview[] }) => {
                                 <div className="grid grid-cols-2 gap-3">
                                     {[
                                         { label: 'Date',     value: selected.reviewDate },
-                                        { label: 'Property', value: selected.property || '—' },
+                                        { label: 'Property', value: resolvePropertyForReview(selected) || selected.property || '—' },
                                         { label: 'Guest',    value: selected.guestName || selected.reservationNumber || '—' },
                                         { label: 'Room',     value: selected.roomName || '—' },
                                         { label: 'Res ID',   value: selected.reservationNumber || '—' },
@@ -3180,5 +3207,334 @@ const FilterBtn = ({ active, onClick, label, count, color = 'brand' }: any) => {
             <span>{label}</span>
             <span className="ml-4 opacity-40 tabular-nums">{count}</span>
         </motion.button>
+    );
+};
+
+const ActionItemTracker = ({ reviews }: { reviews: BookingReview[] }) => {
+    const [taskStatuses, setTaskStatuses] = useState<Record<string, 'todo' | 'in_progress' | 'done'>>(() => {
+        try {
+            const saved = localStorage.getItem('hostel_action_items_status');
+            return saved ? JSON.parse(saved) : {};
+        } catch {
+            return {};
+        }
+    });
+
+    const [statusFilter, setStatusFilter] = useState<'all' | 'todo' | 'in_progress' | 'done'>('all');
+    const [categoryFilter, setCategoryFilter] = useState<string>('all');
+
+    const actionItems = useMemo(() => {
+        const criticalReviews = [...reviews].filter(r => r.reviewScore <= 6 || (r.negativeReview && r.negativeReview.trim() !== '-')).sort((a, b) => (parseRobustDate(b.reviewDate)?.getTime() || 0) - (parseRobustDate(a.reviewDate)?.getTime() || 0));
+        return criticalReviews.map((r, idx) => {
+            const id = r.reservationNumber || `task-${idx}-${r.reviewDate}`;
+            const neg = r.translatedNegative || r.negativeReview || '';
+
+            let category = 'Maintenance';
+            const textLower = neg.toLowerCase();
+            if (textLower.includes('clean') || textLower.includes('dirty') || textLower.includes('towel') || textLower.includes('shower') || textLower.includes('floor')) category = 'Housekeeping';
+            else if (textLower.includes('noise') || textLower.includes('loud') || textLower.includes('sleep') || textLower.includes('party')) category = 'Noise & Quiet';
+            else if (textLower.includes('staff') || textLower.includes('rude') || textLower.includes('reception') || textLower.includes('check-in')) category = 'Front Desk';
+            else if (textLower.includes('wifi') || textLower.includes('ac') || textLower.includes('bed') || textLower.includes('water') || textLower.includes('key')) category = 'Facilities';
+            else if (textLower.includes('price') || textLower.includes('expensive') || textLower.includes('cost') || textLower.includes('value')) category = 'Pricing & Value';
+
+            return {
+                id,
+                room: r.roomName || 'General',
+                property: resolvePropertyForReview(r) || 'General',
+                date: formatDisplayDate(r.reviewDate),
+                score: r.reviewScore,
+                issue: neg || r.reviewTitle || 'Review feedback requires attention',
+                category,
+                guestName: r.guestName || 'Guest',
+                reservationNumber: r.reservationNumber,
+                status: taskStatuses[id] || 'todo'
+            };
+        });
+    }, [reviews, taskStatuses]);
+
+    const updateStatus = (id: string, status: 'todo' | 'in_progress' | 'done') => {
+        const updated = { ...taskStatuses, [id]: status };
+        setTaskStatuses(updated);
+        try {
+            localStorage.setItem('hostel_action_items_status', JSON.stringify(updated));
+        } catch (e) {
+            console.error("Task status save error:", e);
+        }
+    };
+
+    const filteredTasks = useMemo(() => {
+        return actionItems.filter(t => {
+            const matchesStatus = statusFilter === 'all' || t.status === statusFilter;
+            const matchesCat = categoryFilter === 'all' || t.category === categoryFilter;
+            return matchesStatus && matchesCat;
+        });
+    }, [actionItems, statusFilter, categoryFilter]);
+
+    const stats = useMemo(() => {
+        const total = actionItems.length;
+        const todo = actionItems.filter(t => t.status === 'todo').length;
+        const inProgress = actionItems.filter(t => t.status === 'in_progress').length;
+        const done = actionItems.filter(t => t.status === 'done').length;
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        return { total, todo, inProgress, done, pct };
+    }, [actionItems]);
+
+    return (
+        <div className="space-y-8">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
+                <div className="bg-[var(--card-bg)] p-6 rounded-3xl border border-slate-200 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-[var(--text-secondary)] mb-1">Total Issues</p>
+                    <p className="text-3xl font-black text-[var(--text-primary)]">{stats.total}</p>
+                </div>
+                <div className="bg-[var(--card-bg)] p-6 rounded-3xl border border-rose-200/60 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-rose-600 mb-1">To Do</p>
+                    <p className="text-3xl font-black text-rose-600">{stats.todo}</p>
+                </div>
+                <div className="bg-[var(--card-bg)] p-6 rounded-3xl border border-amber-200/60 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-amber-600 mb-1">In Progress</p>
+                    <p className="text-3xl font-black text-amber-600">{stats.inProgress}</p>
+                </div>
+                <div className="bg-[var(--card-bg)] p-6 rounded-3xl border border-emerald-200/60 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600 mb-1">Resolved ({stats.pct}%)</p>
+                    <p className="text-3xl font-black text-emerald-600">{stats.done}</p>
+                </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-4 bg-[var(--card-bg)] p-6 rounded-3xl border border-slate-200 shadow-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-[var(--text-secondary)] mr-2">Status:</span>
+                    {[
+                        { id: 'all', label: 'All Tasks' },
+                        { id: 'todo', label: 'To Do' },
+                        { id: 'in_progress', label: 'In Progress' },
+                        { id: 'done', label: 'Completed' },
+                    ].map(f => (
+                        <button
+                            key={f.id}
+                            onClick={() => setStatusFilter(f.id as any)}
+                            className={cn(
+                                "px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border shadow-sm",
+                                statusFilter === f.id
+                                    ? "bg-indigo-600 border-indigo-600 text-white shadow-lg"
+                                    : "bg-white text-slate-600 border-slate-200 hover:border-indigo-400"
+                            )}
+                        >
+                            {f.label}
+                        </button>
+                    ))}
+                </div>
+
+                <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-[var(--text-secondary)]">Category:</span>
+                    <select
+                        value={categoryFilter}
+                        onChange={(e) => setCategoryFilter(e.target.value)}
+                        className="px-4 py-2 text-xs font-bold bg-slate-100 border-none rounded-xl outline-none cursor-pointer"
+                    >
+                        <option value="all">All Categories</option>
+                        <option value="Housekeeping">Housekeeping</option>
+                        <option value="Facilities">Facilities</option>
+                        <option value="Front Desk">Front Desk</option>
+                        <option value="Noise & Quiet">Noise & Quiet</option>
+                        <option value="Maintenance">Maintenance</option>
+                        <option value="Pricing & Value">Pricing & Value</option>
+                    </select>
+                </div>
+            </div>
+
+            <div className="space-y-4">
+                {filteredTasks.length > 0 ? (
+                    filteredTasks.map((t) => (
+                        <motion.div
+                            key={t.id}
+                            layout
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className={cn(
+                                "p-6 rounded-3xl border shadow-sm transition-all flex flex-col md:flex-row md:items-center justify-between gap-6",
+                                t.status === 'done' ? "bg-slate-50/70 border-slate-200 opacity-60" :
+                                t.status === 'in_progress' ? "bg-amber-50/40 border-amber-200" :
+                                "bg-[var(--card-bg)] border-slate-200/80"
+                            )}
+                        >
+                            <div className="flex items-start gap-4 flex-1">
+                                <div className={cn(
+                                    "w-10 h-10 rounded-2xl flex items-center justify-center font-black text-sm shrink-0 mt-0.5",
+                                    t.score <= 4 ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"
+                                )}>
+                                    {t.score || '!'}
+                                </div>
+                                <div className="space-y-1 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <span className="px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest bg-indigo-50 text-indigo-700 border border-indigo-100">
+                                            {t.category}
+                                        </span>
+                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                            {t.property} • {t.room}
+                                        </span>
+                                        <span className="text-[10px] font-bold text-slate-400">({t.date})</span>
+                                    </div>
+                                    <p className={cn(
+                                        "text-sm font-medium leading-relaxed italic",
+                                        t.status === 'done' ? "line-through text-slate-500" : "text-slate-800 dark:text-slate-200"
+                                    )}>
+                                        "{t.issue}"
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                                {(['todo', 'in_progress', 'done'] as const).map(s => (
+                                    <button
+                                        key={s}
+                                        onClick={() => updateStatus(t.id, s)}
+                                        className={cn(
+                                            "px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all border",
+                                            t.status === s
+                                                ? s === 'done' ? "bg-emerald-600 text-white border-emerald-600" :
+                                                  s === 'in_progress' ? "bg-amber-600 text-white border-amber-600" :
+                                                  "bg-rose-600 text-white border-rose-600"
+                                                : "bg-white text-slate-500 border-slate-200 hover:bg-slate-100"
+                                        )}
+                                    >
+                                        {s === 'todo' ? 'To Do' : s === 'in_progress' ? 'In Progress' : 'Done'}
+                                    </button>
+                                ))}
+                            </div>
+                        </motion.div>
+                    ))
+                ) : (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-3xl p-12 text-center">
+                        <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto mb-4" />
+                        <h3 className="text-lg font-bold text-emerald-900">No matching action items!</h3>
+                        <p className="text-emerald-700 mt-2 text-sm">All tasks for this filter have been completed or no critical issues found.</p>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+const TravelerSegmentReport = ({ reviews }: { reviews: BookingReview[] }) => {
+    const segmentStats = useMemo(() => {
+        const segments: Record<string, { sum: number; count: number }> = {};
+        reviews.forEach(r => {
+            const seg = r.travelerType || 'General Travelers';
+            if (!segments[seg]) segments[seg] = { sum: 0, count: 0 };
+            if (r.reviewScore > 0) {
+                segments[seg].sum += r.reviewScore;
+                segments[seg].count += 1;
+            }
+        });
+
+        return Object.entries(segments).map(([name, data]) => ({
+            name,
+            avg: data.count > 0 ? Number((data.sum / data.count).toFixed(1)) : 0,
+            count: data.count
+        })).sort((a, b) => b.count - a.count);
+    }, [reviews]);
+
+    const countryStats = useMemo(() => {
+        const countries: Record<string, { sum: number; count: number }> = {};
+        reviews.forEach(r => {
+            const c = r.country || 'Unknown / Not specified';
+            if (!countries[c]) countries[c] = { sum: 0, count: 0 };
+            if (r.reviewScore > 0) {
+                countries[c].sum += r.reviewScore;
+                countries[c].count += 1;
+            }
+        });
+
+        const totalCount = reviews.length || 1;
+        return Object.entries(countries).map(([country, data]) => ({
+            country,
+            avg: data.count > 0 ? Number((data.sum / data.count).toFixed(1)) : 0,
+            count: data.count,
+            pct: Math.round((data.count / totalCount) * 100)
+        })).sort((a, b) => b.count - a.count);
+    }, [reviews]);
+
+    return (
+        <div className="space-y-12">
+            <div>
+                <h3 className="text-xl font-black text-[var(--text-primary)] mb-6">Traveler Type Demographics</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                    {segmentStats.map((seg, i) => (
+                        <motion.div
+                            key={seg.name}
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: i * 0.1 }}
+                            className="bg-[var(--card-bg)] p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col justify-between"
+                        >
+                            <div>
+                                <span className="text-[10px] font-black uppercase tracking-widest text-[var(--text-secondary)]">{seg.name}</span>
+                                <div className="flex items-baseline justify-between mt-2">
+                                    <span className="text-3xl font-black text-[var(--text-primary)]">{seg.avg}</span>
+                                    <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full">{seg.count} reviews</span>
+                                </div>
+                            </div>
+                        </motion.div>
+                    ))}
+                </div>
+            </div>
+
+            <div className="bg-[var(--card-bg)] p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h4 className="text-lg font-black text-[var(--text-primary)] mb-6">Average Rating by Traveler Segment</h4>
+                <div className="h-[300px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={segmentStats}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 800, fill: '#64748b' }} />
+                            <YAxis domain={[0, 10]} axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 800, fill: '#64748b' }} />
+                            <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)' }} />
+                            <Bar dataKey="avg" fill="#6366f1" radius={[8, 8, 0, 0]} barSize={40} />
+                        </BarChart>
+                    </ResponsiveContainer>
+                </div>
+            </div>
+
+            <div className="bg-[var(--card-bg)] rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+                    <h4 className="text-lg font-black text-[var(--text-primary)] flex items-center gap-2">
+                        <Globe className="w-5 h-5 text-indigo-600" />
+                        Guest Origin Countries Leaderboard
+                    </h4>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-[var(--text-secondary)]">{countryStats.length} Origins</span>
+                </div>
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left min-w-[600px]">
+                        <thead className="bg-slate-50 border-b border-slate-200">
+                            <tr>
+                                <th className="px-6 py-4 text-xs font-bold text-slate-800 uppercase tracking-wider">Country / Origin</th>
+                                <th className="px-6 py-4 text-xs font-bold text-slate-800 uppercase tracking-wider">Avg Rating</th>
+                                <th className="px-6 py-4 text-xs font-bold text-slate-800 uppercase tracking-wider">Share %</th>
+                                <th className="px-6 py-4 text-xs font-bold text-slate-800 uppercase tracking-wider text-right">Reviews</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {countryStats.slice(0, 15).map((c, i) => (
+                                <tr key={c.country} className="hover:bg-slate-50 transition-colors">
+                                    <td className="px-6 py-4 font-bold text-[var(--text-primary)] flex items-center gap-3">
+                                        <span className="w-6 text-xs text-slate-400 font-mono">#{i + 1}</span>
+                                        {c.country}
+                                    </td>
+                                    <td className="px-6 py-4">
+                                        <span className={cn(
+                                            "text-sm font-black px-2.5 py-1 rounded-full",
+                                            c.avg >= 8.5 ? "bg-emerald-50 text-emerald-700" : "bg-indigo-50 text-indigo-700"
+                                        )}>
+                                            {c.avg}
+                                        </span>
+                                    </td>
+                                    <td className="px-6 py-4 text-sm font-bold text-slate-600">{c.pct}%</td>
+                                    <td className="px-6 py-4 text-slate-800 font-bold text-right">{c.count}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
     );
 };

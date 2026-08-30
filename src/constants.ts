@@ -36,15 +36,42 @@ export const PROPERTY_LOCATIONS: Record<PropertyName, string> = {
 };
 
 /**
- * Resolves a review to a property name by checking roomName + review text
- * fields against the PROPERTY_NAMES list. Returns null when no property
- * matches -- useful for "platform-only" reviews like the PMS export where
- * room names are numbers.
+ * Maps a free-form property label onto the canonical name in PROPERTY_NAMES.
+ *
+ * Exports label the same building inconsistently -- a sheet tab reading
+ * "RadZone Hostel", a column reading "Radzone", review text saying "radzone".
+ * Without this they become separate property segments: scores get split across
+ * two entries in Property Comparison, the filter buttons miss half the data,
+ * and PROPERTY_LOCATIONS (keyed on the canonical name) finds no address, so
+ * the location goes missing on the review card.
+ *
+ * Matching ignores case, punctuation, and a trailing "hostel"/"hotel"/"hostels".
+ * An unrecognised label is returned trimmed but otherwise untouched, so a
+ * genuinely new property still shows up rather than being silently dropped.
  */
-export const resolvePropertyForReview = (r: BookingReview): PropertyName | null => {
-  // 1. Explicit property field wins (set at upload time via majority vote).
-  if (r.property && (PROPERTY_NAMES as readonly string[]).includes(r.property)) {
-    return r.property as PropertyName;
+export const canonicalPropertyName = (raw: string | undefined | null): string | null => {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return null;
+  const normalise = (s: string) =>
+    s.toLowerCase()
+      .replace(/\b(hostels?|hotels?)\b/g, '')
+      .replace(/[^a-z0-9]/g, '');
+  const key = normalise(trimmed);
+  if (!key) return trimmed;
+  for (const name of PROPERTY_NAMES) {
+    if (normalise(name) === key) return name;
+  }
+  return trimmed;
+};
+
+/**
+ * Resolves a review to a property name by checking the explicit property field,
+ * or matching roomName + review text fields against the PROPERTY_NAMES list.
+ */
+export const resolvePropertyForReview = (r: BookingReview): string | null => {
+  // 1. Explicit property field wins (set at upload time via majority vote or tab/column).
+  if (r.property && r.property.trim()) {
+    return canonicalPropertyName(r.property);
   }
   // 2. Fall back to per-review text matching for legacy data without property set.
   const hay = (
