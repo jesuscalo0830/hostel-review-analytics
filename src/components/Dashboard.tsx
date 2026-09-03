@@ -285,6 +285,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
         setTranslatedReviews(reviews);
     }, [reviews]);
 
+    // The custom range deliberately starts empty, which the 'custom' branch
+    // above treats as "no bounds" -- so a refresh shows the whole dataset.
+    //
+    // This previously auto-filled with the latest month in the data, which
+    // silently hid everything older: a fresh load of 274 reviews showed 32,
+    // with no indication that a filter had been applied on the user's behalf.
+
 
 
     const handleLanguageChange = async (langName: string) => {
@@ -1852,7 +1859,7 @@ const OverallSatisfactionReport = ({ reviews, averages, setActiveReport, targetL
                         </h3>
                     </div>
                     <ul className="space-y-4">
-                        {[...reviews].filter(r => r.reviewScore >= 9 && isValidFeedback(r.positiveReview)).sort((a, b) => (parseRobustDate(b.reviewDate)?.getTime() || 0) - (parseRobustDate(a.reviewDate)?.getTime() || 0)).slice(0, 4).map((r, i) => (
+                        {[...reviews].filter(r => r.reviewScore >= 9 && isValidFeedback(r.positiveReview)).sort((a, b) => (parseRobustDate(b.reviewDate)?.getTime() || 0) - (parseRobustDate(a.reviewDate)?.getTime() || 0)).slice(0, 5).map((r, i) => (
                             <motion.li
                                 key={i}
                                 initial={{ opacity: 0, x: -20 }}
@@ -1895,7 +1902,7 @@ const OverallSatisfactionReport = ({ reviews, averages, setActiveReport, targetL
                         </button>
                     </div>
                     <ul className="space-y-4">
-                        {[...reviews].filter(r => r.reviewScore < 6 && hasWrittenFeedback(r)).sort((a, b) => (parseRobustDate(b.reviewDate)?.getTime() || 0) - (parseRobustDate(a.reviewDate)?.getTime() || 0)).slice(0, 4).map((r, i) => (
+                        {[...reviews].filter(r => r.reviewScore < 6 && hasWrittenFeedback(r)).sort((a, b) => (parseRobustDate(b.reviewDate)?.getTime() || 0) - (parseRobustDate(a.reviewDate)?.getTime() || 0)).slice(0, 5).map((r, i) => (
                             <motion.li
                                 key={i}
                                 initial={{ opacity: 0, x: 20 }}
