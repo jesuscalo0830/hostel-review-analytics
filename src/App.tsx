@@ -2,15 +2,20 @@ import { useState, useEffect } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { parseBookingCSV, detectPlatform, parseXLSBuffer } from './utils/csvParser';
 import { BookingReview, UploadLogEntry } from './types';
-import { SAMPLE_CSV } from './constants';
 import { motion, AnimatePresence } from 'motion/react';
-import { generateInsights, translateReviewsBatch } from './services/gemini';
-import { fetchReviews, saveReviews, clearAllReviews, userHasInitialized } from './services/firestore';
-import { isValidFeedback, needsEnglishTranslation } from './utils/validation';
+import { translateReviewsBatch } from './services/gemini';
+import {
+  saveReviews, clearAllReviews, subscribeToReviews, readCachedReviews,
+} from './services/firestore';
+import { onAuthChange, signOutUser, type User } from './lib/firebase';
+import { SignIn } from './components/SignIn';
+import { needsEnglishTranslation } from './utils/validation';
 
 export default function App() {
   const [reviews, setReviews] = useState<BookingReview[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
+  /** undefined = auth state not resolved yet; null = signed out. */
+  const [user, setUser] = useState<User | null | undefined>(undefined);
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
   const [uploadToast, setUploadToast] = useState<{ type: 'success' | 'duplicate'; message: string } | null>(null);
   /** Message shown on the loading screen while first-load work runs. */
@@ -25,68 +30,64 @@ export default function App() {
   };
   const aiKeyMissing = !process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'MY_GEMINI_API_KEY';
 
+  // Resolve the signed-in account before touching any data. Reviews live at
+  // users/{uid}/reviews, so there is nothing to read until this settles.
+  useEffect(() => onAuthChange(setUser), []);
+
   useEffect(() => {
-    const loadData = async () => {
-      try {
-        const storedReviews = await fetchReviews();
-        if (storedReviews.length === 0 && !userHasInitialized()) {
-          // Fallback to sample data if no data exists and user has never initialized before
-          const initialReviews = parseBookingCSV(SAMPLE_CSV);
-          
-          // Auto-translate sample data to English
-          const translated = await translateReviewsBatch(initialReviews, "English");
-          setReviews(translated);
-          
-          // Auto-save sample data with translations to Firestore
-          await saveReviews(translated);
-        } else {
-          // Repair translations BEFORE the dashboard renders, so reports and
-          // review cards never briefly show untranslated text.
-          //
-          // Not gated on an API key: translateReviewsBatch falls back to the
-          // offline dictionary when no key is configured, and that fallback
-          // used to be unreachable here.
-          const needsFix = storedReviews.filter(needsEnglishTranslation);
-          if (needsFix.length === 0) {
-            setReviews(storedReviews);
-          } else {
-            console.info(`[auto-translate] ${needsFix.length} untranslated non-English review(s); translating before render.`);
-            setLoadingStatus(
-              `Translating ${needsFix.length} review${needsFix.length !== 1 ? 's' : ''} to English...`
-            );
+    if (user === undefined) return;          // still resolving
+    if (user === null) {                     // signed out: drop everything
+      setReviews([]);
+      setIsLoaded(false);
+      return;
+    }
+
+    // Paint from the per-account cache immediately, then let the live
+    // subscription correct it. Without this the dashboard waits on a network
+    // round trip on every load.
+    const cached = readCachedReviews();
+    if (cached.length > 0) setReviews(cached);
+
+    let cancelled = false;
+    let translatedOnce = false;
+
+    const unsubscribe = subscribeToReviews(
+      async (incoming) => {
+        if (cancelled) return;
+        setReviews(incoming);
+        setCloudSyncError(null);
+
+        // Repair translations once per session, after the first snapshot, so
+        // reports never render untranslated text. Runs with or without an API
+        // key -- translateReviewsBatch falls back to the offline dictionary.
+        if (!translatedOnce) {
+          translatedOnce = true;
+          const needsFix = incoming.filter(needsEnglishTranslation);
+          if (needsFix.length > 0) {
+            setLoadingStatus(`Translating ${needsFix.length} review${needsFix.length !== 1 ? 's' : ''} to English...`);
             try {
-              // Bounded: a hung or throttled API must not leave the user
-              // staring at a spinner. On timeout we render what we have and
-              // the Repair Translations button remains available.
               const TIMEOUT_MS = 60_000;
               const fixed = await Promise.race([
                 translateReviewsBatch(needsFix, "English"),
                 new Promise<null>(resolve => setTimeout(() => resolve(null), TIMEOUT_MS)),
               ]);
-              if (fixed) {
-                const { merged } = await saveReviews(fixed);
-                setReviews(merged);
-              } else {
-                console.warn(`[auto-translate] timed out after ${TIMEOUT_MS}ms; rendering untranslated.`);
-                setReviews(storedReviews);
-              }
+              if (fixed && !cancelled) await saveReviews(fixed);
             } catch (err) {
-              console.warn("[auto-translate] translation skipped:", err);
-              setReviews(storedReviews);
+              console.warn("[auto-translate] skipped:", err);
             }
           }
         }
-      } catch (error) {
-        console.error("Error loading reviews from Firestore:", error);
-        const fallbackReviews = parseBookingCSV(SAMPLE_CSV);
-        setReviews(fallbackReviews);
-      } finally {
+        setIsLoaded(true);
+      },
+      (err) => {
+        if (cancelled) return;
+        setCloudSyncError(err.message);
         setIsLoaded(true);
       }
-    };
+    );
 
-    loadData();
-  }, []);
+    return () => { cancelled = true; unsubscribe(); };
+  }, [user]);
 
   const handleUpload = async (csv: string | ArrayBuffer, fileName?: string) => {
     try {
@@ -119,7 +120,6 @@ export default function App() {
       // saveReviews returns the merged local state directly, avoiding the
       // round-trip through fetchReviews (which used to overwrite local with
       // stale Firestore data after a clear).
-      try { localStorage.setItem('hostel_user_initialized', 'true'); } catch {}
       const { merged, added, updated, remoteSaved, remoteError } = await saveReviews(translated);
       setReviews(merged);
       setCloudSyncError(remoteError || null);
@@ -247,10 +247,9 @@ export default function App() {
   const handleClear = async () => {
     if (window.confirm("Are you sure you want to clear all data from the database?")) {
       await clearAllReviews();
-      // Mark the user as initialized so we don't re-seed SAMPLE_CSV on the next
-      // page load. Also reset local upload logs and action item states.
+      // Firestore is authoritative now, so there is no sample-data reseed to
+      // guard against -- just clear the local view state.
       try {
-        localStorage.setItem('hostel_user_initialized', 'true');
         localStorage.removeItem('upload_log');
         localStorage.removeItem('hostel_action_items_status');
         localStorage.removeItem('hostel_handled_review_ids');
@@ -276,6 +275,18 @@ export default function App() {
 
   const toggleDarkMode = () => setIsDarkMode(!isDarkMode);
 
+  // Auth gate. Resolving the session is fast but not instant, so show the
+  // spinner rather than flashing the sign-in screen at an already-signed-in
+  // user on every page load.
+  if (user === undefined) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+  if (user === null) return <SignIn />;
+
   return (
     <div className="min-h-screen transition-colors duration-300">
       <AnimatePresence mode="wait">
@@ -299,6 +310,8 @@ export default function App() {
               onDismissToast={() => setUploadToast(null)}
               cloudSyncError={cloudSyncError}
               uploadLog={uploadLog}
+              userEmail={user.email || undefined}
+              onSignOut={signOutUser}
             />
           </motion.div>
         ) : (

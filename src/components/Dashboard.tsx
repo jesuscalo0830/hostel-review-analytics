@@ -15,7 +15,7 @@ import {
     Languages, Loader2, Smile, Search, ArrowRightLeft, Filter, Sparkles,
     Droplets, Volume2, MapPin, Wrench, Table, RefreshCw, ShieldCheck, Briefcase, UserCircle,
     CheckCircle2, AlertTriangle, Heart, Menu, X, Sun, Moon, Building2, BadgeCheck,
-    Globe, FileSpreadsheet, CheckSquare, ListTodo
+    Globe, FileSpreadsheet, CheckSquare, ListTodo, LogOut
 } from 'lucide-react';
 import { generateInsights, translateReviewsBatch, analyzeSentimentBatch, categorizeNegativeReviews, draftReplyToReview } from '../services/gemini';
 import { exportToExcel } from '../utils/excelExporter';
@@ -44,6 +44,9 @@ interface DashboardProps {
     /** Set to a string when the most recent Firestore write was denied. */
     cloudSyncError?: string | null;
     uploadLog?: UploadLogEntry[];
+    /** Signed-in account, shown beside the sign-out control. */
+    userEmail?: string;
+    onSignOut?: () => void | Promise<void>;
 }
 
 type ReportType =
@@ -263,7 +266,7 @@ const matchesPropertyName = (r: BookingReview, name: string): boolean => {
     return hay.includes(needle);
 };
 
-export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear, onRepairTranslations, isDarkMode, toggleDarkMode, aiKeyMissing, cloudSyncError, uploadToast, onDismissToast, uploadLog = [] }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear, onRepairTranslations, isDarkMode, toggleDarkMode, aiKeyMissing, cloudSyncError, uploadToast, onDismissToast, uploadLog = [], userEmail, onSignOut }) => {
     const [activeReport, setActiveReport] = useState<ReportType>('overall');
     const [persona, setPersona] = useState<Persona>('admin');
     const [isGenerating, setIsGenerating] = useState(false);
@@ -626,6 +629,24 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
                             <AlertCircle className="w-4 h-4" />
                             <span className="text-sm">Clear Data</span>
                         </motion.button>
+                        {onSignOut && (
+                            <div className="pt-3 mt-1 border-t border-slate-200/70">
+                                {userEmail && (
+                                    <p className="text-[10px] font-bold text-[var(--text-secondary)] truncate mb-2 px-1" title={userEmail}>
+                                        {userEmail}
+                                    </p>
+                                )}
+                                <motion.button
+                                    whileHover={{ scale: 1.02 }}
+                                    whileTap={{ scale: 0.98 }}
+                                    onClick={() => onSignOut()}
+                                    className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-white text-slate-700 rounded-2xl font-bold hover:bg-slate-100 transition-all active:scale-95 border border-slate-200"
+                                >
+                                    <LogOut className="w-4 h-4" />
+                                    <span className="text-sm">Sign Out</span>
+                                </motion.button>
+                            </div>
+                        )}
                     </div>
                 </aside>
             )}

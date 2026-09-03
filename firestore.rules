@@ -1,12 +1,17 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /reviews/{reviewId} {
-      allow read: if true;
-      allow create, update: if 'reviewDate' in request.resource.data;
-      allow delete: if false;
+
+    // Reviews are private to the account that uploaded them. The uid in the
+    // path must match the caller, so one signed-in user cannot read another's
+    // data by guessing the path.
+    match /users/{userId}/reviews/{reviewId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
+    // Everything else, including the old world-readable top-level `reviews`
+    // collection, is closed. Delete that collection in the Firebase console
+    // once the per-user flow is confirmed working.
     match /{document=**} {
       allow read, write: if false;
     }

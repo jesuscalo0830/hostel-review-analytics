@@ -3,18 +3,26 @@ import {
   getDocs,
   writeBatch,
   doc,
+  onSnapshot,
+  type CollectionReference,
 } from "firebase/firestore";
-import { db } from "../lib/firebase";
+import { db, auth } from "../lib/firebase";
 import { BookingReview } from "../types";
 
-const REVIEWS_COLLECTION = "reviews";
 const LOCAL_STORAGE_KEY = "hostel_reviews_fallback";
-const USER_INITIALIZED_KEY = "hostel_user_initialized";
 
+/**
+ * Document id for a review.
+ *
+ * Prefers the platform's reservation number. Placeholder values ("-", "n/a")
+ * are rejected so unrelated rows don't collide on a shared junk id; those
+ * fall back to a hash of the content, scoped by property so the same text
+ * from two hostels stays distinct.
+ */
 const idFor = (review: BookingReview): string => {
   const resNum = (review.reservationNumber || '').trim();
-  const validResNum = resNum && !['undefined', 'null', '-', '--', 'n/a', 'na'].includes(resNum.toLowerCase());
-  let id = validResNum
+  const validResNum = resNum && !['undefined', 'null', '-', '--', 'n/a', 'na', '0'].includes(resNum.toLowerCase());
+  const id = validResNum
     ? resNum
     : btoa(encodeURIComponent(
         `${review.property || ''}-${review.reviewDate}-${review.reviewTitle}-${review.reviewScore}` +
@@ -24,70 +32,93 @@ const idFor = (review: BookingReview): string => {
   return id.replace(/[^a-zA-Z0-9_-]/g, '_');
 };
 
-const readLocal = (): BookingReview[] => {
+/**
+ * Reviews are stored per account at `users/{uid}/reviews`, which is what
+ * makes the same data appear in every browser you sign into -- and what
+ * keeps it invisible to everyone else (see firestore.rules).
+ */
+const reviewsCollection = (): CollectionReference => {
+  const uid = auth.currentUser?.uid;
+  if (!uid) throw new Error('Not signed in');
+  return collection(db, 'users', uid, 'reviews');
+};
+
+export const isSignedIn = (): boolean => !!auth.currentUser;
+
+// ----------------------------------------------------------------------
+// localStorage is now only a fast-paint cache, never the source of truth.
+// It is namespaced per uid so switching accounts in one browser cannot show
+// the previous account's reviews.
+// ----------------------------------------------------------------------
+
+const cacheKey = (): string => `${LOCAL_STORAGE_KEY}_${auth.currentUser?.uid || 'anon'}`;
+
+const readCache = (): BookingReview[] => {
   try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    const raw = localStorage.getItem(cacheKey());
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
   }
 };
 
-const writeLocal = (reviews: BookingReview[]): void => {
+const writeCache = (reviews: BookingReview[]): void => {
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(reviews));
+    localStorage.setItem(cacheKey(), JSON.stringify(reviews));
   } catch (e) {
-    console.error("Local storage write failed:", e);
+    // Quota exceeded is survivable: Firestore still has the data.
+    console.warn("[cache] write failed:", e);
   }
 };
 
-const userHasInitialized = (): boolean => {
-  try {
-    return localStorage.getItem(USER_INITIALIZED_KEY) === 'true';
-  } catch {
-    return false;
-  }
-};
+/** Read whatever the cache holds for the current account, for first paint. */
+export const readCachedReviews = (): BookingReview[] => readCache();
 
 /**
- * Saves reviews. localStorage is the AUTHORITATIVE store -- this function
- * merges the new batch into local state and returns the merged result so
- * the caller can update React state directly without a round-trip through
- * fetchReviews (which historically caused stale Firestore data to clobber
- * the local view after a clear).
+ * Saves reviews to Firestore and refreshes the cache.
  *
- * Firestore writes are best-effort sync. If they fail (rules denial,
- * offline) the local save still succeeded.
+ * `added` / `updated` are computed against the ids already on the server, so
+ * the upload toast can report what actually changed. Counting after the merge
+ * always found every row present, which made every upload look like a
+ * duplicate.
  */
 export const saveReviews = async (
   reviews: BookingReview[]
 ): Promise<{
   merged: BookingReview[];
-  /** Rows appended because no existing review shared their id. */
   added: number;
-  /** Rows that matched an existing review and replaced it. */
   updated: number;
   localSaved: number;
   remoteSaved: number;
   remoteError?: string;
 }> => {
-  // 1. Merge into localStorage (authoritative)
-  const existingLocal = readLocal();
-  const merged = [...existingLocal];
-  // Counted here rather than by the caller: only this function can see the
-  // pre-merge state, and comparing against `merged` afterwards always finds
-  // every row present, which made every upload look like a duplicate.
+  if (!auth.currentUser) {
+    return { merged: readCache(), added: 0, updated: 0, localSaved: 0, remoteSaved: 0, remoteError: 'Not signed in' };
+  }
+
+  const col = reviewsCollection();
+
+  // Existing server state, to classify each row and to merge into.
+  const existing = new Map<string, BookingReview>();
+  try {
+    const snap = await getDocs(col);
+    snap.forEach(d => existing.set(d.id, d.data() as BookingReview));
+  } catch (err: any) {
+    // Offline: fall back to the cache so an upload isn't lost.
+    readCache().forEach(r => existing.set(idFor(r), r));
+    console.warn("[firestore] read before save failed, using cache:", err?.message || err);
+  }
+
   let added = 0;
   let updated = 0;
-  reviews.forEach(r => {
-    const targetId = idFor(r);
-    const idx = merged.findIndex(m => idFor(m) === targetId);
-    if (idx >= 0) { merged[idx] = r; updated++; }
-    else { merged.push(r); added++; }
-  });
-  writeLocal(merged);
+  for (const r of reviews) {
+    const id = idFor(r);
+    if (existing.has(id)) updated++; else added++;
+    existing.set(id, r);
+  }
+  const merged = [...existing.values()];
+  writeCache(merged);
 
-  // 2. Firestore best-effort sync
   let remoteSaved = 0;
   let remoteError: string | undefined;
   const BATCH_SIZE = 500;
@@ -95,78 +126,113 @@ export const saveReviews = async (
     for (let i = 0; i < reviews.length; i += BATCH_SIZE) {
       const batch = writeBatch(db);
       const chunk = reviews.slice(i, i + BATCH_SIZE);
-      chunk.forEach(review => {
-        const docRef = doc(db, REVIEWS_COLLECTION, idFor(review));
-        batch.set(docRef, review, { merge: true });
-      });
+      chunk.forEach(review => batch.set(doc(col, idFor(review)), review, { merge: true }));
       await batch.commit();
       remoteSaved += chunk.length;
     }
   } catch (err: any) {
     remoteError = err?.message || String(err);
-    console.warn(
-      `[firestore] write skipped: ${remoteError}. ` +
-      `Data is authoritative in localStorage; deploy firestore.rules to enable cloud sync.`
-    );
+    console.warn(`[firestore] write failed: ${remoteError}`);
   }
 
   return { merged, added, updated, localSaved: reviews.length, remoteSaved, remoteError };
 };
 
-/**
- * Returns the user's reviews.
- *
- * Source-of-truth rule:
- *  - If the user has ever uploaded or cleared (userInitialized flag set),
- *    localStorage is authoritative. We do NOT pull from Firestore -- that
- *    would re-import stale cloud data after a local clear.
- *  - If the user is brand-new (no flag, no local data), we read Firestore
- *    once as a bootstrap. This preserves the original "first-run pulls
- *    sample data from Firestore" behaviour without breaking clears.
- */
+/** One-shot read. Prefer subscribeToReviews for anything long-lived. */
 export const fetchReviews = async (): Promise<BookingReview[]> => {
-  if (userHasInitialized()) {
-    return readLocal();
-  }
-
-  // First-run bootstrap path
+  if (!auth.currentUser) return [];
   try {
-    const querySnapshot = await getDocs(collection(db, REVIEWS_COLLECTION));
+    const snap = await getDocs(reviewsCollection());
     const reviews: BookingReview[] = [];
-    querySnapshot.forEach(d => {
-      reviews.push(d.data() as BookingReview);
-    });
-    if (reviews.length > 0) {
-      writeLocal(reviews);
-      return reviews;
-    }
+    snap.forEach(d => reviews.push(d.data() as BookingReview));
+    writeCache(reviews);
+    return reviews;
   } catch (error) {
-    console.warn("[firestore] read failed, using local storage:", error);
+    console.warn("[firestore] read failed, using cache:", error);
+    return readCache();
   }
-  return readLocal();
 };
 
 /**
- * Clears reviews everywhere, locally first (always succeeds) then remotely
- * (best-effort). Local clear is what the user actually sees -- a denied
- * remote delete is logged but doesn't undo the clear.
+ * Live subscription to the signed-in user's reviews.
+ *
+ * This is what keeps browsers consistent: an upload in one tab or browser
+ * reaches the others without a refresh. Returns an unsubscribe function.
  */
+export const subscribeToReviews = (
+  onData: (reviews: BookingReview[]) => void,
+  onError?: (err: Error) => void
+): (() => void) => {
+  if (!auth.currentUser) {
+    onData([]);
+    return () => {};
+  }
+  return onSnapshot(
+    reviewsCollection(),
+    snap => {
+      const reviews: BookingReview[] = [];
+      snap.forEach(d => reviews.push(d.data() as BookingReview));
+      writeCache(reviews);
+      onData(reviews);
+    },
+    err => {
+      console.warn("[firestore] subscription error:", err);
+      onError?.(err);
+    }
+  );
+};
+
+/** Deletes every review for the signed-in account. */
 export const clearAllReviews = async (): Promise<void> => {
   try {
-    localStorage.removeItem(LOCAL_STORAGE_KEY);
+    localStorage.removeItem(cacheKey());
   } catch (e) {
-    console.error("Local storage clear failed:", e);
+    console.error("Cache clear failed:", e);
   }
 
+  if (!auth.currentUser) return;
+
   try {
-    const querySnapshot = await getDocs(collection(db, REVIEWS_COLLECTION));
-    const batch = writeBatch(db);
-    querySnapshot.forEach(d => batch.delete(d.ref));
-    await batch.commit();
+    const snap = await getDocs(reviewsCollection());
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += 500) {
+      const batch = writeBatch(db);
+      docs.slice(i, i + 500).forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
   } catch (error) {
-    console.warn(
-      "[firestore] remote clear failed (likely rules denial); " +
-      "local clear is still in effect. Deploy firestore.rules to enable cloud delete."
-    );
+    console.warn("[firestore] remote clear failed:", error);
+    throw error;
   }
+};
+
+/**
+ * Privacy / GDPR: delete every review for one guest, matched by exact guest
+ * name (case-insensitive) or reservation number.
+ */
+export const deleteReviewsForGuest = async (
+  query: string
+): Promise<{ removed: number; remaining: BookingReview[] }> => {
+  const q = query.trim().toLowerCase();
+  if (!q || !auth.currentUser) return { removed: 0, remaining: readCache() };
+
+  const col = reviewsCollection();
+  const snap = await getDocs(col);
+  const matches: string[] = [];
+  const remaining: BookingReview[] = [];
+  snap.forEach(d => {
+    const r = d.data() as BookingReview;
+    const hit =
+      (r.guestName || '').trim().toLowerCase() === q ||
+      (r.reservationNumber || '').trim().toLowerCase() === q;
+    if (hit) matches.push(d.id); else remaining.push(r);
+  });
+
+  for (let i = 0; i < matches.length; i += 500) {
+    const batch = writeBatch(db);
+    matches.slice(i, i + 500).forEach(id => batch.delete(doc(col, id)));
+    await batch.commit();
+  }
+  writeCache(remaining);
+  return { removed: matches.length, remaining };
 };
