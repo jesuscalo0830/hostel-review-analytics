@@ -6,3 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Service account keys. These grant full access to the Firebase project --
+# they belong in a GitHub Actions secret, never in the repository.
+*service-account*.json
+*serviceaccount*.json
+hostel-analyzer-*.json
+.github/*.json
