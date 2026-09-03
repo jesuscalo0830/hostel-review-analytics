@@ -159,9 +159,20 @@ export const isNonEnglishText = (text: string | undefined | null): boolean => {
   const words = trimmed.toLowerCase().replace(/[^\p{L}\s]/gu, ' ').split(/\s+/).filter(w => w.length > 0);
   if (words.length === 0) return false;
 
+  // Words that also occur in ordinary English sentences. Counting them as
+  // foreign flagged plainly English reviews (e.g. one mentioning "a la carte"
+  // or "no" and "so") for re-translation on every load, wasting API quota.
+  const AMBIGUOUS_WITH_ENGLISH = new Set([
+    'a', 'an', 'as', 'at', 'be', 'but', 'can', 'do', 'die', 'don', 'el', 'em',
+    'en', 'era', 'es', 'fine', 'for', 'had', 'he', 'in', 'is', 'it', 'la',
+    'las', 'le', 'les', 'man', 'me', 'mine', 'no', 'not', 'on', 'or', 'os',
+    'of', 'per', 'plus', 'sale', 'so', 'son', 'te', 'the', 'to', 'un', 'us', 'van',
+    'was', 'we', 'wed', 'wij', 'you',
+  ]);
+
   let nonEnglishWordCount = 0;
   for (const word of words) {
-    if (NON_ENGLISH_WORDS.has(word)) {
+    if (NON_ENGLISH_WORDS.has(word) && !AMBIGUOUS_WITH_ENGLISH.has(word)) {
       nonEnglishWordCount++;
     }
   }

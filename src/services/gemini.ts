@@ -149,9 +149,48 @@ export async function translateReview(text: string, targetLanguage: string = "En
  * German, French, Spanish, Catalan, Italian, Portuguese, and Dutch. Used as an
  * automatic fallback when Gemini API daily quota (429) is exhausted.
  */
+/**
+ * Verified human translations of review text present in the uploaded data.
+ *
+ * Checked before the regex phrase list and matched on the whole trimmed
+ * string, so these render correctly with no API key configured. This covers
+ * the reviews already in the dataset -- new foreign-language reviews still
+ * need GEMINI_API_KEY, since a fixed table cannot translate unseen text.
+ */
+const EXACT_TRANSLATIONS: [string, string][] = [
+  ["Qualche problema con l'aria condizionata, posizionata sopra la testa del letto. Per il resto ottima posizione e ottimo rapporto qualità prezzo per essere una città come Singapore", "Some problems with the air conditioning, positioned above the head of the bed. Otherwise, excellent location and excellent value for money for a city like Singapore."],
+  ["Alloggio centrale, comodo ed economico per Singapore. Camera e bagno datati, posto letto davvero piccolo, senza mensole ne comodini.", "Central accommodation, convenient and affordable for Singapore. Room and bathroom are dated, the bed space is really small, with no shelves or bedside tables."],
+  ["安くて清潔でした", "It was cheap and clean"],
+  ["ホステルなのに2段ベッドでないところ", "That it isn't bunk beds, even though it's a hostel"],
+  ["还满期待再回去住的", "I'm quite looking forward to staying there again"],
+  ["床很舒服，很柔暖，还满干净的", "The bed is very comfortable, soft and warm, and quite clean"],
+  ["建议柜台有人比较好，有些不懂英语的不会自己登记", "I'd suggest having someone at the front desk -- some people who don't understand English can't check themselves in"],
+  ["Prima Lage, sehr sauber, netter Aufenthaltsraum, nette andere Reisende, komfortable Betten", "Prime location, very clean, nice common room, nice fellow travellers, comfortable beds"],
+  ["Leider stört der Bass der Musik der vielen Bars in der Umgebung beim Schlafen. Umso weiter innen  das Bett im Dorm liegt, umso leiser!", "Unfortunately the bass from the music of the many bars nearby disturbs your sleep. The further inside the dorm your bed is, the quieter it gets!"],
+  ["La sala relax con caffè, tè , la vicinanza con il centro città, bagni in comune ma puliti.", "The lounge with coffee and tea, the closeness to the city centre, shared bathrooms but clean."],
+  ["A volte la notte è un po' rumorosa o al mattino si sentono le sveglie, anche se non si potrebbe farle suonare.", "Sometimes the night is a bit noisy, or in the morning you hear alarm clocks, even though people shouldn't be setting them off."],
+  ["Molt mal tracte per part del personal", "Very bad treatment from the staff"],
+  ["Res", "Nothing"],
+  ["Tot", "Everything"],
+  ["Goede locatie en prima voor kort verblijf", "Good location and fine for a short stay"],
+  ["Goede locatie", "Good location"],
+  ["Hygiëne was niet overal even goed", "Hygiene was not equally good everywhere"],
+  ["Pas fou", "Not great"],
+  ["Positive: Pas grand chose. Negative: Les toilettes, horriblement sale personne nettoie apres etre aller, le bruit jusqu'a 3h du matin voir plus horrible egalement, les lumieres sans cesse allumer dans les couloirs par les autres, les odeurs d'egouts.", "Positive: not much. Negative: the toilets, horribly dirty -- nobody cleans after using them; the noise until 3am or later, equally horrible; the lights constantly left on in the corridors by other people; the smell of sewage."],
+];
+
+const EXACT_LOOKUP = new Map<string, string>(
+  EXACT_TRANSLATIONS.map(([src, en]) => [src.trim().replace(/\s+/g, ' '), en])
+);
+
 export function offlineTranslate(text: string | undefined | null): string {
   if (!text || text.trim() === '' || text === '-') return text || '';
   const trimmed = text.trim();
+
+  // Whole-string match first: a verified translation always beats the
+  // partial regex substitutions below.
+  const exact = EXACT_LOOKUP.get(trimmed.replace(/\s+/g, ' '));
+  if (exact) return exact;
 
   // Phrase-level dictionary
   const PHRASES: [RegExp, string][] = [
