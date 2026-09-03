@@ -5,7 +5,7 @@ import { BookingReview, UploadLogEntry } from './types';
 import { SAMPLE_CSV } from './constants';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateInsights, translateReviewsBatch } from './services/gemini';
-import { fetchReviews, saveReviews, clearAllReviews } from './services/firestore';
+import { fetchReviews, saveReviews, clearAllReviews, userHasInitialized } from './services/firestore';
 import { isValidFeedback, needsEnglishTranslation } from './utils/validation';
 
 export default function App() {
@@ -13,6 +13,8 @@ export default function App() {
   const [isLoaded, setIsLoaded] = useState(false);
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
   const [uploadToast, setUploadToast] = useState<{ type: 'success' | 'duplicate'; message: string } | null>(null);
+  /** Message shown on the loading screen while first-load work runs. */
+  const [loadingStatus, setLoadingStatus] = useState('Initializing Dashboard...');
   const [uploadLog, setUploadLog] = useState<UploadLogEntry[]>(() => {
     try { return JSON.parse(localStorage.getItem('upload_log') || '[]'); } catch { return []; }
   });
@@ -27,8 +29,8 @@ export default function App() {
     const loadData = async () => {
       try {
         const storedReviews = await fetchReviews();
-        if (storedReviews.length === 0) {
-          // Fallback to sample data if no data exists in Firestore
+        if (storedReviews.length === 0 && !userHasInitialized()) {
+          // Fallback to sample data if no data exists and user has never initialized before
           const initialReviews = parseBookingCSV(SAMPLE_CSV);
           
           // Auto-translate sample data to English
@@ -38,16 +40,40 @@ export default function App() {
           // Auto-save sample data with translations to Firestore
           await saveReviews(translated);
         } else {
-          setReviews(storedReviews);
-
-          // Auto-translate any stored reviews that contain untranslated non-English text
+          // Repair translations BEFORE the dashboard renders, so reports and
+          // review cards never briefly show untranslated text.
+          //
+          // Not gated on an API key: translateReviewsBatch falls back to the
+          // offline dictionary when no key is configured, and that fallback
+          // used to be unreachable here.
           const needsFix = storedReviews.filter(needsEnglishTranslation);
-          if (needsFix.length > 0 && process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY') {
-            console.info(`[auto-translate] Found ${needsFix.length} untranslated non-English review(s). Auto-translating...`);
-            translateReviewsBatch(needsFix, "English").then(async (fixed) => {
-              const { merged } = await saveReviews(fixed);
-              setReviews(merged);
-            }).catch(err => console.warn("[auto-translate] background translation skipped:", err));
+          if (needsFix.length === 0) {
+            setReviews(storedReviews);
+          } else {
+            console.info(`[auto-translate] ${needsFix.length} untranslated non-English review(s); translating before render.`);
+            setLoadingStatus(
+              `Translating ${needsFix.length} review${needsFix.length !== 1 ? 's' : ''} to English...`
+            );
+            try {
+              // Bounded: a hung or throttled API must not leave the user
+              // staring at a spinner. On timeout we render what we have and
+              // the Repair Translations button remains available.
+              const TIMEOUT_MS = 60_000;
+              const fixed = await Promise.race([
+                translateReviewsBatch(needsFix, "English"),
+                new Promise<null>(resolve => setTimeout(() => resolve(null), TIMEOUT_MS)),
+              ]);
+              if (fixed) {
+                const { merged } = await saveReviews(fixed);
+                setReviews(merged);
+              } else {
+                console.warn(`[auto-translate] timed out after ${TIMEOUT_MS}ms; rendering untranslated.`);
+                setReviews(storedReviews);
+              }
+            } catch (err) {
+              console.warn("[auto-translate] translation skipped:", err);
+              setReviews(storedReviews);
+            }
           }
         }
       } catch (error) {
@@ -267,7 +293,7 @@ export default function App() {
           <div className="flex items-center justify-center h-screen">
             <div className="flex flex-col items-center gap-4">
               <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-              <p className="text-slate-500 font-medium animate-pulse">Initializing Dashboard...</p>
+              <p className="text-slate-500 font-medium animate-pulse">{loadingStatus}</p>
             </div>
           </div>
         )}
