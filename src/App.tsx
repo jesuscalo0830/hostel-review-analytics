@@ -188,15 +188,21 @@ export default function App() {
         return;
       }
 
-      // Bail early if the API key is missing -- the call would silently
-      // return the input unchanged and the previous flow would alert
-      // "successfully" while having done nothing.
+      // Without an API key the offline dictionary still runs, but it only
+      // covers a fixed set of common hostel phrases -- so say what will
+      // actually happen rather than either refusing outright or implying
+      // full translation.
       if (aiKeyMissing) {
-        alert(
-          'Cannot translate -- no Gemini API key is configured.\n\n' +
-          'Set GEMINI_API_KEY in .env, then run npm run deploy.'
+        const proceed = window.confirm(
+          'No Gemini API key is configured, so only the built-in offline ' +
+          'dictionary can be used.\n\n' +
+          'It covers common German, French, Spanish, Catalan, Italian, ' +
+          'Portuguese and Dutch phrases -- anything else will stay in its ' +
+          'original language.\n\n' +
+          'For full translation, set GEMINI_API_KEY and redeploy.\n\n' +
+          'Run the offline pass now?'
         );
-        return;
+        if (!proceed) return;
       }
 
       const translated = await translateReviewsBatch(needsTranslation, "English");
@@ -213,18 +219,24 @@ export default function App() {
       setReviews(merged);
       setCloudSyncError(remoteError || null);
 
+      const engine = aiKeyMissing ? 'offline dictionary' : 'Gemini';
       if (successCount === 0) {
         alert(
-          'No translations were applied. The Gemini API may be down or rate-limited; ' +
-          'check the browser console for details.'
+          aiKeyMissing
+            ? 'No translations were applied. The offline dictionary did not ' +
+              'recognise any of these phrases. Set GEMINI_API_KEY for full ' +
+              'translation coverage.'
+            : 'No translations were applied. The Gemini API may be down or ' +
+              'rate-limited; check the browser console for details.'
         );
       } else if (successCount < needsTranslation.length) {
         alert(
-          `Translated ${successCount} of ${needsTranslation.length} reviews. ` +
-          `The remaining ${needsTranslation.length - successCount} may have failed -- check the console.`
+          `Translated ${successCount} of ${needsTranslation.length} reviews using the ${engine}. ` +
+          `The remaining ${needsTranslation.length - successCount} were left unchanged` +
+          (aiKeyMissing ? ' -- set GEMINI_API_KEY to translate them.' : ' -- check the console.')
         );
       } else {
-        alert(`Translated ${successCount} reviews successfully.`);
+        alert(`Translated ${successCount} reviews using the ${engine}.`);
       }
     } catch (error: any) {
       console.error("Repair error:", error);
