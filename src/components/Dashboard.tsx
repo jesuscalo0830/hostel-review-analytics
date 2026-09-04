@@ -1062,7 +1062,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
                                             <Sparkles className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
                                             <div className="text-[12px] leading-relaxed text-blue-900">
                                                 <p className="font-bold tracking-wide uppercase text-[10px] text-blue-700 mb-1">AI features disabled</p>
-                                                <p>No Gemini API key is configured, so translation, sentiment analysis, and AI insights will fail silently. Set GEMINI_API_KEY in your .env, then run <code className="font-mono bg-blue-100 px-1 rounded">npm run deploy</code> to enable.</p>
+                                                <p>
+                                                    No Gemini API key is compiled into this build, so translation,
+                                                    sentiment analysis, AI insights and reply drafting are unavailable.
+                                                    Uploads, reports and exports are unaffected.
+                                                </p>
+                                                <p className="mt-2">
+                                                    {/* The key is baked in at build time, so where you set it depends
+                                                        on who runs the build -- naming only .env sent users to the
+                                                        wrong place once deploys moved to CI. */}
+                                                    <span className="font-bold">Deployed site:</span> add a repository
+                                                    secret named <code className="font-mono bg-blue-100 px-1 rounded">GEMINI_API_KEY</code>{' '}
+                                                    in GitHub (Settings &rarr; Secrets and variables &rarr; Actions),
+                                                    then push to rebuild.
+                                                </p>
+                                                <p className="mt-1">
+                                                    <span className="font-bold">Running locally:</span> set{' '}
+                                                    <code className="font-mono bg-blue-100 px-1 rounded">GEMINI_API_KEY</code>{' '}
+                                                    in <code className="font-mono bg-blue-100 px-1 rounded">.env</code> and restart the dev server.
+                                                </p>
                                             </div>
                                         </div>
                                     )}
