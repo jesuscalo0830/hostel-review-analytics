@@ -5,7 +5,7 @@ import { BookingReview, UploadLogEntry } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { translateReviewsBatch } from './services/gemini';
 import {
-  saveReviews, clearAllReviews, subscribeToReviews, readCachedReviews,
+  saveReviews, subscribeToReviews, readCachedReviews,
 } from './services/firestore';
 import { onAuthChange, signOutUser, type User } from './lib/firebase';
 import { SignIn } from './components/SignIn';
@@ -244,20 +244,12 @@ export default function App() {
     }
   };
 
-  const handleClear = async () => {
-    if (window.confirm("Are you sure you want to clear all data from the database?")) {
-      await clearAllReviews();
-      // Firestore is authoritative now, so there is no sample-data reseed to
-      // guard against -- just clear the local view state.
-      try {
-        localStorage.removeItem('upload_log');
-        localStorage.removeItem('hostel_action_items_status');
-        localStorage.removeItem('hostel_handled_review_ids');
-      } catch {}
-      setReviews([]);
-      setUploadLog([]);
-    }
-  };
+  // Deleting reviews is intentionally not possible from the app.
+  //
+  // The workspace is shared, so one person clearing it would wipe the
+  // dataset for the whole team, and uploads are the only way to rebuild it.
+  // firestore.rules also denies delete, so this cannot be re-enabled by
+  // changing the UI alone.
 
   const [isDarkMode, setIsDarkMode] = useState(() => {
     return localStorage.getItem('theme') === 'dark';
@@ -301,7 +293,6 @@ export default function App() {
             <Dashboard
               reviews={reviews}
               onUpload={handleUpload}
-              onClear={handleClear}
               onRepairTranslations={handleRepairTranslations}
               isDarkMode={isDarkMode}
               toggleDarkMode={toggleDarkMode}

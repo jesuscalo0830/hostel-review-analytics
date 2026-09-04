@@ -191,57 +191,14 @@ export const subscribeToReviews = (
   );
 };
 
-/** Deletes every review in the shared workspace -- affects all users. */
-export const clearAllReviews = async (): Promise<void> => {
-  try {
-    localStorage.removeItem(cacheKey());
-  } catch (e) {
-    console.error("Cache clear failed:", e);
-  }
-
-  if (!auth.currentUser) return;
-
-  try {
-    const snap = await getDocs(reviewsCollection());
-    const docs = snap.docs;
-    for (let i = 0; i < docs.length; i += 500) {
-      const batch = writeBatch(db);
-      docs.slice(i, i + 500).forEach(d => batch.delete(d.ref));
-      await batch.commit();
-    }
-  } catch (error) {
-    console.warn("[firestore] remote clear failed:", error);
-    throw error;
-  }
-};
-
 /**
- * Privacy / GDPR: delete every review for one guest, matched by exact guest
- * name (case-insensitive) or reservation number.
+ * Deletion is not exposed by this module, by design.
+ *
+ * The workspace is shared, so a single "clear" would destroy the dataset for
+ * the whole team, and the only way back is re-uploading every source file.
+ * firestore.rules denies `delete` as well, so restoring a UI button here
+ * would not be enough to re-enable it -- the rules have to change too.
+ *
+ * If a per-guest erasure flow is needed (GDPR requests), add it deliberately:
+ * a narrow function scoped to one guest, not a blanket clear.
  */
-export const deleteReviewsForGuest = async (
-  query: string
-): Promise<{ removed: number; remaining: BookingReview[] }> => {
-  const q = query.trim().toLowerCase();
-  if (!q || !auth.currentUser) return { removed: 0, remaining: readCache() };
-
-  const col = reviewsCollection();
-  const snap = await getDocs(col);
-  const matches: string[] = [];
-  const remaining: BookingReview[] = [];
-  snap.forEach(d => {
-    const r = d.data() as BookingReview;
-    const hit =
-      (r.guestName || '').trim().toLowerCase() === q ||
-      (r.reservationNumber || '').trim().toLowerCase() === q;
-    if (hit) matches.push(d.id); else remaining.push(r);
-  });
-
-  for (let i = 0; i < matches.length; i += 500) {
-    const batch = writeBatch(db);
-    matches.slice(i, i + 500).forEach(id => batch.delete(doc(col, id)));
-    await batch.commit();
-  }
-  writeCache(remaining);
-  return { removed: matches.length, remaining };
-};

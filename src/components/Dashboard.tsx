@@ -35,7 +35,6 @@ interface DashboardProps {
     onUpload: (csv: string | ArrayBuffer, fileName?: string) => void;
     uploadToast?: { type: 'success' | 'duplicate'; message: string } | null;
     onDismissToast?: () => void;
-    onClear: () => void;
     onRepairTranslations: () => Promise<void>;
     isDarkMode: boolean;
     toggleDarkMode: () => void;
@@ -266,7 +265,7 @@ const matchesPropertyName = (r: BookingReview, name: string): boolean => {
     return hay.includes(needle);
 };
 
-export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear, onRepairTranslations, isDarkMode, toggleDarkMode, aiKeyMissing, cloudSyncError, uploadToast, onDismissToast, uploadLog = [], userEmail, onSignOut }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onRepairTranslations, isDarkMode, toggleDarkMode, aiKeyMissing, cloudSyncError, uploadToast, onDismissToast, uploadLog = [], userEmail, onSignOut }) => {
     const [activeReport, setActiveReport] = useState<ReportType>('overall');
     const [persona, setPersona] = useState<Persona>('admin');
     const [isGenerating, setIsGenerating] = useState(false);
@@ -619,15 +618,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ reviews, onUpload, onClear
                         >
                             <RefreshCw className="w-4 h-4" />
                             <span className="text-sm">Repair Translations</span>
-                        </motion.button>
-                        <motion.button
-                            whileHover={{ scale: 1.02 }}
-                            whileTap={{ scale: 0.98 }}
-                            onClick={onClear}
-                            className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-slate-100 text-slate-800 rounded-2xl font-bold hover:bg-slate-200 transition-all active:scale-95"
-                        >
-                            <AlertCircle className="w-4 h-4" />
-                            <span className="text-sm">Clear Data</span>
                         </motion.button>
                         {onSignOut && (
                             <div className="pt-3 mt-1 border-t border-slate-200/70">

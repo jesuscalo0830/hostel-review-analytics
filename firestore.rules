@@ -11,14 +11,28 @@ service cloud.firestore {
     // giving each its own workspace id if that becomes too broad.
     match /workspaces/{workspaceId}/reviews/{reviewId} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null;
+
+      // Create and update only -- deletion is denied for everyone.
+      //
+      // `write` would have included delete. Reviews are append-only on
+      // purpose: the workspace is shared, so one clear would destroy the
+      // dataset for the whole team, and re-uploading every source file is
+      // the only way back. Enforcing it here rather than only in the UI
+      // means a console or script cannot delete either.
+      //
+      // Removing rows now requires an explicit rules change, or the
+      // Firebase console with owner credentials.
+      allow create, update: if request.auth != null;
+      allow delete: if false;
     }
 
     // Legacy per-user path, kept readable during migration so anything
     // written before the switch is still reachable. Safe to delete once
     // the shared workspace is populated.
     match /users/{userId}/reviews/{reviewId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create, update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if false;
     }
 
     // Everything else, including the old world-readable top-level `reviews`
