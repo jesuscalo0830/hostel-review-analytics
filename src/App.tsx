@@ -31,7 +31,7 @@ export default function App() {
   const aiKeyMissing = !process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'MY_GEMINI_API_KEY';
 
   // Resolve the signed-in account before touching any data. Reviews live at
-  // users/{uid}/reviews, so there is nothing to read until this settles.
+  // the shared workspace, so there is nothing to read until this settles.
   useEffect(() => onAuthChange(setUser), []);
 
   useEffect(() => {
@@ -42,7 +42,7 @@ export default function App() {
       return;
     }
 
-    // Paint from the per-account cache immediately, then let the live
+    // Paint from the workspace cache immediately, then let the live
     // subscription correct it. Without this the dashboard waits on a network
     // round trip on every load.
     const cached = readCachedReviews();

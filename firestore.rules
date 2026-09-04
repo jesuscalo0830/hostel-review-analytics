@@ -2,9 +2,21 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Reviews are private to the account that uploaded them. The uid in the
-    // path must match the caller, so one signed-in user cannot read another's
-    // data by guessing the path.
+    // One shared workspace per team. Any signed-in user can read and write
+    // it, which is the point -- the team needs a single view of the data.
+    // Sign-in is what gates access; anonymous callers get nothing.
+    //
+    // Note this is a trust boundary at the account level, not the row level:
+    // anyone you let sign in can edit or clear every review. Split teams by
+    // giving each its own workspace id if that becomes too broad.
+    match /workspaces/{workspaceId}/reviews/{reviewId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // Legacy per-user path, kept readable during migration so anything
+    // written before the switch is still reachable. Safe to delete once
+    // the shared workspace is populated.
     match /users/{userId}/reviews/{reviewId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }

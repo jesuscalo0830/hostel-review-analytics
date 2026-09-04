@@ -33,25 +33,33 @@ const idFor = (review: BookingReview): string => {
 };
 
 /**
- * Reviews are stored per account at `users/{uid}/reviews`, which is what
- * makes the same data appear in every browser you sign into -- and what
- * keeps it invisible to everyone else (see firestore.rules).
+ * Reviews live in ONE shared workspace that every signed-in user reads and
+ * writes: `workspaces/{WORKSPACE_ID}/reviews`.
+ *
+ * This is a deliberate choice over per-user storage -- the team needs a
+ * single view of the properties, so a colleague's upload has to show up for
+ * everyone. Sign-in is still required (see firestore.rules); it gates who
+ * can reach the workspace, it does not partition the data.
+ *
+ * To split teams later, make WORKSPACE_ID configurable and give each team
+ * its own id; the rules already scope on the workspace segment.
  */
+const WORKSPACE_ID = 'shared';
+
 const reviewsCollection = (): CollectionReference => {
-  const uid = auth.currentUser?.uid;
-  if (!uid) throw new Error('Not signed in');
-  return collection(db, 'users', uid, 'reviews');
+  if (!auth.currentUser) throw new Error('Not signed in');
+  return collection(db, 'workspaces', WORKSPACE_ID, 'reviews');
 };
 
 export const isSignedIn = (): boolean => !!auth.currentUser;
 
 // ----------------------------------------------------------------------
-// localStorage is now only a fast-paint cache, never the source of truth.
-// It is namespaced per uid so switching accounts in one browser cannot show
-// the previous account's reviews.
+// localStorage is only a fast-paint cache, never the source of truth.
+// Keyed by workspace rather than by user: everyone in the workspace sees the
+// same reviews, so caching per uid would just duplicate identical data.
 // ----------------------------------------------------------------------
 
-const cacheKey = (): string => `${LOCAL_STORAGE_KEY}_${auth.currentUser?.uid || 'anon'}`;
+const cacheKey = (): string => `${LOCAL_STORAGE_KEY}_ws_${WORKSPACE_ID}`;
 
 const readCache = (): BookingReview[] => {
   try {
@@ -154,10 +162,11 @@ export const fetchReviews = async (): Promise<BookingReview[]> => {
 };
 
 /**
- * Live subscription to the signed-in user's reviews.
+ * Live subscription to the shared workspace.
  *
- * This is what keeps browsers consistent: an upload in one tab or browser
- * reaches the others without a refresh. Returns an unsubscribe function.
+ * This is what keeps browsers consistent: an upload in one tab, browser or
+ * machine reaches every other signed-in viewer without a refresh. Returns an
+ * unsubscribe function.
  */
 export const subscribeToReviews = (
   onData: (reviews: BookingReview[]) => void,
@@ -182,7 +191,7 @@ export const subscribeToReviews = (
   );
 };
 
-/** Deletes every review for the signed-in account. */
+/** Deletes every review in the shared workspace -- affects all users. */
 export const clearAllReviews = async (): Promise<void> => {
   try {
     localStorage.removeItem(cacheKey());

@@ -45,7 +45,7 @@ export const SignIn = () => {
         <h1 className="text-2xl font-black text-slate-900 tracking-tight">Hostel Analyzer</h1>
         <p className="text-sm text-slate-500 mt-2 mb-8 leading-relaxed">
           Multi-platform guest-review intelligence.<br />
-          Sign in to reach your reviews from any browser.
+          Sign in to reach the team's shared review data from any browser.
         </p>
 
         <button
