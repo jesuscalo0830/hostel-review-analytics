@@ -327,13 +327,22 @@ export async function translateReviewsBatch(
 
   // Split into chunks of 20 to reduce total API request count
   const chunkSize = 20;
+  /** 15 requests/minute on the free tier -> one every 4s, plus a margin. */
+  const MIN_REQUEST_GAP_MS = 4500;
   const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+  /** A 429 means the quota is spent; hammering it wastes the remaining budget. */
+  const isRateLimit = (err: unknown): boolean =>
+    /\b429\b|RESOURCE_EXHAUSTED|rate.?limit|quota/i.test(String((err as any)?.message ?? err ?? ''));
+  let rateLimited = false;
 
   for (let i = 0; i < toTranslate.length; i += chunkSize) {
     const chunk = toTranslate.slice(i, i + chunkSize);
 
-    // Throttle 2.5s between chunks to strictly respect Gemini Free Tier 15 RPM limit
-    if (i > 0) await delay(2500);
+    // Gemini's free tier allows 15 requests per minute -- one every 4s. A
+    // 2.5s gap is 24/min, which overruns the limit and gets nearly every
+    // request rejected with 429 after the first one or two succeed.
+    if (i > 0) await delay(MIN_REQUEST_GAP_MS);
 
     const prompt = `
       You are a professional translator specializing in travel and hospitality. 
@@ -402,7 +411,21 @@ export async function translateReviewsBatch(
         retries--;
         const errMsg = String(error?.message || error || '');
         console.warn(`Batch translation chunk ${i} failed (${retries} retries left). Error:`, errMsg);
-        if (retries > 0) {
+        if (isRateLimit(error)) {
+          // Exponential backoff, then give up on the whole run. Continuing to
+          // send requests against an exhausted quota just returns more 429s
+          // and delays the point at which the user is told what happened.
+          if (retries > 0) {
+            await delay(8000 * (3 - retries));
+          } else {
+            rateLimited = true;
+            console.warn(
+              `[translate] Gemini quota exhausted at chunk ${i}. ` +
+              `${i} of ${toTranslate.length} reviews were translated and saved; ` +
+              `the rest resume on the next load once quota resets.`
+            );
+          }
+        } else if (retries > 0) {
           await delay(2500);
         } else {
           // If Gemini API fails (e.g. 429 Rate Limit / Quota Exhausted), apply offline translation fallback
@@ -427,6 +450,8 @@ export async function translateReviewsBatch(
       Math.min(i + chunkSize, toTranslate.length),
       toTranslate.length
     );
+
+    if (rateLimited) break;
   }
 
   return updatedReviews;
