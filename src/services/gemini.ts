@@ -268,7 +268,24 @@ export function offlineTranslate(text: string | undefined | null): string {
   return trimmed;
 }
 
-export async function translateReviewsBatch(reviews: BookingReview[], targetLanguage: string) {
+/**
+ * Progress callback fired after each chunk finishes.
+ *
+ * `partial` is the full review array with everything translated so far, so a
+ * caller can persist as it goes. Without this, a long run that is cut short
+ * loses every translation it had already paid for.
+ */
+export type TranslationProgress = (
+  partial: BookingReview[],
+  done: number,
+  total: number
+) => void;
+
+export async function translateReviewsBatch(
+  reviews: BookingReview[],
+  targetLanguage: string,
+  onProgress?: TranslationProgress
+) {
   if (reviews.length === 0) return reviews;
   
   const apiKey = process.env.GEMINI_API_KEY;
@@ -402,6 +419,14 @@ export async function translateReviewsBatch(reviews: BookingReview[], targetLang
         }
       }
     }
+
+    // Hand back what is done so far. The caller persists it, so a timeout or
+    // a rate-limit stop keeps the chunks already translated.
+    onProgress?.(
+      [...updatedReviews],
+      Math.min(i + chunkSize, toTranslate.length),
+      toTranslate.length
+    );
   }
 
   return updatedReviews;

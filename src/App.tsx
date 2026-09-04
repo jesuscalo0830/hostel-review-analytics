@@ -66,12 +66,48 @@ export default function App() {
           if (needsFix.length > 0) {
             setLoadingStatus(`Translating ${needsFix.length} review${needsFix.length !== 1 ? 's' : ''} to English...`);
             try {
-              const TIMEOUT_MS = 60_000;
+              // Persist after every chunk rather than only at the end.
+              //
+              // Gemini is called in chunks of 20 with a 2.5s gap to respect
+              // the free-tier rate limit, so a few hundred reviews take
+              // minutes. Saving only on completion meant a timeout threw away
+              // every translation already paid for, and the next load started
+              // from nothing -- which is why translations never appeared to
+              // stick on a large dataset.
+              // Held in an object: TypeScript narrows a `let` that is only
+              // assigned inside a callback back to null at the read site.
+              const progress: { last: BookingReview[] | null } = { last: null };
+              const onProgress = (partial: BookingReview[], done: number, total: number) => {
+                if (cancelled) return;
+                setLoadingStatus(`Translating reviews to English... ${done} of ${total}`);
+                progress.last = partial;
+                // Fire and forget: a failed intermediate save must not stop
+                // the run, and the next chunk will save again anyway.
+                saveReviews(partial).catch(err =>
+                  console.warn("[auto-translate] partial save failed:", err)
+                );
+              };
+
+              // Budget scales with the work: ~6s per chunk of 20 plus slack,
+              // capped so a pathological run cannot hang the app forever.
+              const chunks = Math.ceil(needsFix.length / 20);
+              const TIMEOUT_MS = Math.min(15_000 + chunks * 6_000, 300_000);
+
               const fixed = await Promise.race([
-                translateReviewsBatch(needsFix, "English"),
+                translateReviewsBatch(needsFix, "English", onProgress),
                 new Promise<null>(resolve => setTimeout(() => resolve(null), TIMEOUT_MS)),
               ]);
-              if (fixed && !cancelled) await saveReviews(fixed);
+              if (!cancelled) {
+                if (fixed) {
+                  await saveReviews(fixed);
+                } else {
+                  console.warn(
+                    `[auto-translate] hit the ${TIMEOUT_MS}ms budget; ` +
+                    `chunks completed so far are saved and the rest resume on the next load.`
+                  );
+                  if (progress.last) await saveReviews(progress.last);
+                }
+              }
             } catch (err) {
               console.warn("[auto-translate] skipped:", err);
             }
