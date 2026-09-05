@@ -340,9 +340,15 @@ export async function translateReviewsBatch(
 
   const ai = new GoogleGenAI({ apiKey });
 
-  // Split into chunks of 20 to reduce total API request count
-  const chunkSize = 20;
-  /** 15 requests/minute on the free tier -> one every 4s, plus a margin. */
+  // The binding free-tier limit is requests PER DAY, not per minute:
+  //   GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue 20
+  //
+  // So the goal is fewest possible requests, not slowest. At 60 reviews per
+  // request, a 20-request day covers 1200 reviews instead of 400. Larger
+  // chunks risk a truncated or malformed response, which the retry and the
+  // validator already handle by dropping that chunk rather than corrupting it.
+  const chunkSize = 60;
+  /** Spacing still matters for the per-minute limit, just far less often. */
   const MIN_REQUEST_GAP_MS = 4500;
   const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 

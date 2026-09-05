@@ -61,6 +61,21 @@ export const isSignedIn = (): boolean => !!auth.currentUser;
 
 const cacheKey = (): string => `${LOCAL_STORAGE_KEY}_ws_${WORKSPACE_ID}`;
 
+/**
+ * Firestore rejects `undefined` field values outright, failing the whole
+ * batch. Optional fields are legitimately undefined here -- a review with no
+ * property reply has no translatedReply -- so drop those keys rather than
+ * writing them. Omitting a key leaves any existing value untouched under
+ * { merge: true }, which is what we want.
+ */
+const stripUndefined = (review: BookingReview): BookingReview => {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(review)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out as BookingReview;
+};
+
 const readCache = (): BookingReview[] => {
   try {
     const raw = localStorage.getItem(cacheKey());
@@ -134,7 +149,7 @@ export const saveReviews = async (
     for (let i = 0; i < reviews.length; i += BATCH_SIZE) {
       const batch = writeBatch(db);
       const chunk = reviews.slice(i, i + BATCH_SIZE);
-      chunk.forEach(review => batch.set(doc(col, idFor(review)), review, { merge: true }));
+      chunk.forEach(review => batch.set(doc(col, idFor(review)), stripUndefined(review), { merge: true }));
       await batch.commit();
       remoteSaved += chunk.length;
     }
