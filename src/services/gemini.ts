@@ -123,6 +123,21 @@ export async function generateInsights(reviews: BookingReview[], targetLanguage:
   }
 }
 
+/**
+ * Result of an offline translation attempt, or undefined when the dictionary
+ * had no match.
+ *
+ * offlineTranslate echoes its input when it cannot translate. Storing that
+ * echo in `translated*` made untranslated reviews look translated: the
+ * fields were populated, so success counters and any `translated || original`
+ * render path treated them as done while the text was unchanged.
+ */
+const translatedOrUndefined = (source: string | undefined): string | undefined => {
+  if (!source || !source.trim()) return undefined;
+  const out = offlineTranslate(source);
+  return out && out.trim() && out.trim() !== source.trim() ? out : undefined;
+};
+
 export async function translateReview(text: string, targetLanguage: string = "English") {
   if (!text || text.trim().length === 0 || text === "-") return text;
   
@@ -314,10 +329,10 @@ export async function translateReviewsBatch(
     toTranslate.forEach(item => {
       updatedReviews[item.id] = {
         ...updatedReviews[item.id],
-        translatedTitle: offlineTranslate(item.title),
-        translatedPositive: offlineTranslate(item.pos),
-        translatedNegative: offlineTranslate(item.neg),
-        translatedReply: offlineTranslate(item.reply),
+        translatedTitle: translatedOrUndefined(item.title),
+        translatedPositive: translatedOrUndefined(item.pos),
+        translatedNegative: translatedOrUndefined(item.neg),
+        translatedReply: translatedOrUndefined(item.reply),
       };
     });
     return updatedReviews;
@@ -399,10 +414,10 @@ export async function translateReviewsBatch(
           if (r) {
             updatedReviews[item.id] = {
               ...updatedReviews[item.id],
-              translatedTitle: r.title || offlineTranslate(item.title),
-              translatedPositive: r.pos || offlineTranslate(item.pos),
-              translatedNegative: r.neg || offlineTranslate(item.neg),
-              translatedReply: r.reply || offlineTranslate(item.reply),
+              translatedTitle: r.title || translatedOrUndefined(item.title),
+              translatedPositive: r.pos || translatedOrUndefined(item.pos),
+              translatedNegative: r.neg || translatedOrUndefined(item.neg),
+              translatedReply: r.reply || translatedOrUndefined(item.reply),
             };
           }
         });
@@ -433,10 +448,10 @@ export async function translateReviewsBatch(
           chunk.forEach(item => {
             updatedReviews[item.id] = {
               ...updatedReviews[item.id],
-              translatedTitle: offlineTranslate(item.title),
-              translatedPositive: offlineTranslate(item.pos),
-              translatedNegative: offlineTranslate(item.neg),
-              translatedReply: offlineTranslate(item.reply),
+              translatedTitle: translatedOrUndefined(item.title),
+              translatedPositive: translatedOrUndefined(item.pos),
+              translatedNegative: translatedOrUndefined(item.neg),
+              translatedReply: translatedOrUndefined(item.reply),
             };
           });
         }

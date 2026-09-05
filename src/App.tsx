@@ -243,10 +243,18 @@ export default function App() {
 
       const translated = await translateReviewsBatch(needsTranslation, "English");
 
-      // Count how many reviews actually came back with translations populated
-      // (vs. unchanged because the API call failed mid-batch).
+      // Count reviews whose text actually CHANGED, not just whose translated
+      // fields are populated.
+      //
+      // The offline fallback used to echo the source text into translated*,
+      // so a populated-field count reported "translated N successfully" while
+      // every review on screen was still in its original language.
+      const changed = (a?: string, b?: string) =>
+        !!a && !!b && a.trim() !== b.trim();
       const successCount = translated.filter(r =>
-        r.translatedPositive || r.translatedNegative || r.translatedTitle
+        changed(r.translatedPositive, r.positiveReview) ||
+        changed(r.translatedNegative, r.negativeReview) ||
+        changed(r.translatedTitle, r.reviewTitle)
       ).length;
 
       // Use saveReviews's merged result directly so we don't round-trip
