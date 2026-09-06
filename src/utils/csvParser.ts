@@ -46,6 +46,23 @@ const getCI = (row: any, ...keys: string[]): any => {
 };
 
 /**
+ * Guest origin country and traveller segment, when the export provides them.
+ *
+ * Every format spells these differently ("Country", "Traveler type",
+ * "Traveller Type", "Guest Country"), and previously only the Guest Reviews
+ * parser read them at all -- so the Traveler Insights report saw about a
+ * third of the data and lumped the rest into "Unknown", even for files whose
+ * header row plainly had the columns.
+ */
+const extractCountry = (row: any): string | undefined =>
+  String(getCI(row, 'Country', 'Guest Country', 'Nationality') || '').trim() || undefined;
+
+const extractTravelerType = (row: any): string | undefined =>
+  String(
+    getCI(row, 'Traveler Type', 'Traveller Type', 'Traveler type', 'Travellier Type', 'Guest Type', 'Trip Type') || ''
+  ).trim() || undefined;
+
+/**
  * Normalise a platform label from a "Platform" column ("Booking.com",
  * "Agoda", "Airbnb"...) onto the app's ReviewPlatform union.
  */
@@ -149,6 +166,8 @@ const parseBookingRows = (rows: any[]): BookingReview[] => {
       valueForMoney: parseScore(row['Value for money Score'] || row['Value for money'] || row['Value']),
       propertyReply: String(row['Property Comment'] || row['Property reply'] || row['Response'] || ''),
       platform: 'Booking' as ReviewPlatform,
+      country: extractCountry(row),
+      travelerType: extractTravelerType(row),
     }];
   });
 };
@@ -179,6 +198,8 @@ const parseAgodaRows = (rows: any[]): BookingReview[] => {
       valueForMoney: parseScore(row['Value for money']),
       propertyReply: String(row['Property reply'] || ''),
       platform: 'Agoda' as ReviewPlatform,
+      country: extractCountry(row),
+      travelerType: extractTravelerType(row),
     }];
   });
 };
@@ -211,6 +232,8 @@ const parsePMSRows = (rows: any[]): BookingReview[] => {
       valueForMoney: 0,
       propertyReply: '',
       platform: 'PMS' as ReviewPlatform,
+      country: extractCountry(row),
+      travelerType: extractTravelerType(row),
     };
   });
 };
@@ -266,8 +289,8 @@ export const parseGuestReviewsRows = (
       platform: normalisePlatformLabel(getCI(row, 'Platform', 'Source', 'Channel')),
       property,
       /** Extra columns this format carries that the core reports don't use yet. */
-      country: String(getCI(row, 'Country') || '').trim() || undefined,
-      travelerType: String(getCI(row, 'Traveler Type', 'Traveller Type') || '').trim() || undefined,
+      country: extractCountry(row),
+      travelerType: extractTravelerType(row),
       nights: parseScore(getCI(row, 'Nights')) || undefined,
     }];
   });
@@ -573,6 +596,8 @@ const parsePmsXlsRows = (rows: any[], property: string | undefined): BookingRevi
       propertyReply: '',
       platform: 'PMS' as ReviewPlatform,
       property,
+      country: extractCountry(row),
+      travelerType: extractTravelerType(row),
     };
   }).filter(r => r.reviewDate || r.reviewScore > 0);
 };
@@ -603,6 +628,8 @@ const parseStandardRows = (rows: any[], property: string | undefined): BookingRe
         propertyReply: reply,
         platform: 'Booking' as ReviewPlatform,
         property: detectedProperty,
+        country: extractCountry(row),
+        travelerType: extractTravelerType(row),
       };
     })
     .filter(r => r.reviewDate || r.reviewScore > 0);
@@ -633,6 +660,8 @@ const parseTripComRows = (rows: any[], property: string | undefined): BookingRev
         propertyReply: String(getCI(row, 'Owner Response', 'Response') || ''),
         platform: 'Other' as ReviewPlatform,
         property,
+        country: extractCountry(row),
+        travelerType: extractTravelerType(row),
       };
     })
     .filter(r => r.reviewDate || r.reviewScore > 0);
@@ -657,6 +686,8 @@ const parseConsolidatedBookingRows = (rows: any[]): BookingReview[] =>
     propertyReply: String(getCI(row, 'Property reply', 'Property Reply') || ''),
     platform: 'Booking' as ReviewPlatform,
     property: String(getCI(row, 'Hostel') || '').trim() || undefined,
+    country: extractCountry(row),
+    travelerType: extractTravelerType(row),
   })).filter(r => r.reviewDate || r.reviewScore > 0);
 
 const parseConsolidatedAgodaRows = (rows: any[]): BookingReview[] =>
@@ -678,6 +709,8 @@ const parseConsolidatedAgodaRows = (rows: any[]): BookingReview[] =>
     propertyReply: '',
     platform: 'Agoda' as ReviewPlatform,
     property: String(getCI(row, 'Hostel') || '').trim() || undefined,
+    country: extractCountry(row),
+    travelerType: extractTravelerType(row),
   })).filter(r => r.reviewDate || r.reviewScore > 0);
 
 const parseConsolidatedAirbnbRows = (rows: any[]): BookingReview[] =>
@@ -694,6 +727,8 @@ const parseConsolidatedAirbnbRows = (rows: any[]): BookingReview[] =>
     propertyReply: '',
     platform: 'Other' as ReviewPlatform,
     property: String(getCI(row, 'Hostel') || '').trim() || undefined,
+    country: extractCountry(row),
+    travelerType: extractTravelerType(row),
   })).filter(r => r.positiveReview || r.negativeReview);
 
 export const parseXLSBuffer = async (buffer: ArrayBuffer): Promise<BookingReview[]> => {

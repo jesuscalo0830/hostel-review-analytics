@@ -3557,46 +3557,87 @@ const ActionItemTracker = ({ reviews }: { reviews: BookingReview[] }) => {
 };
 
 const TravelerSegmentReport = ({ reviews }: { reviews: BookingReview[] }) => {
+    // `count` is every review in the segment; `scored` is the subset the
+    // average is computed from. Conflating them undercounted each segment by
+    // the number of unscored reviews it held -- and with ~100 unscored rows
+    // in a typical dataset, the totals never added up to the review count.
     const segmentStats = useMemo(() => {
-        const segments: Record<string, { sum: number; count: number }> = {};
+        const segments: Record<string, { sum: number; scored: number; count: number }> = {};
         reviews.forEach(r => {
-            const seg = r.travelerType || 'General Travelers';
-            if (!segments[seg]) segments[seg] = { sum: 0, count: 0 };
+            const seg = r.travelerType || 'Not specified';
+            if (!segments[seg]) segments[seg] = { sum: 0, scored: 0, count: 0 };
+            segments[seg].count += 1;
             if (r.reviewScore > 0) {
                 segments[seg].sum += r.reviewScore;
-                segments[seg].count += 1;
+                segments[seg].scored += 1;
             }
         });
 
         return Object.entries(segments).map(([name, data]) => ({
             name,
-            avg: data.count > 0 ? Number((data.sum / data.count).toFixed(1)) : 0,
+            avg: data.scored > 0 ? Number((data.sum / data.scored).toFixed(1)) : 0,
+            scored: data.scored,
             count: data.count
         })).sort((a, b) => b.count - a.count);
     }, [reviews]);
 
     const countryStats = useMemo(() => {
-        const countries: Record<string, { sum: number; count: number }> = {};
+        const countries: Record<string, { sum: number; scored: number; count: number }> = {};
         reviews.forEach(r => {
-            const c = r.country || 'Unknown / Not specified';
-            if (!countries[c]) countries[c] = { sum: 0, count: 0 };
+            const c = r.country || 'Not specified';
+            if (!countries[c]) countries[c] = { sum: 0, scored: 0, count: 0 };
+            countries[c].count += 1;
             if (r.reviewScore > 0) {
                 countries[c].sum += r.reviewScore;
-                countries[c].count += 1;
+                countries[c].scored += 1;
             }
         });
 
         const totalCount = reviews.length || 1;
         return Object.entries(countries).map(([country, data]) => ({
             country,
-            avg: data.count > 0 ? Number((data.sum / data.count).toFixed(1)) : 0,
+            avg: data.scored > 0 ? Number((data.sum / data.scored).toFixed(1)) : 0,
+            scored: data.scored,
             count: data.count,
+            // Share of all reviews, now that count is all reviews rather than
+            // only the scored ones -- these add up to 100% again.
             pct: Math.round((data.count / totalCount) * 100)
         })).sort((a, b) => b.count - a.count);
     }, [reviews]);
 
+    /** How much of the current set actually carries origin/segment data. */
+    const insightCoverage = useMemo(() => {
+        const total = reviews.length || 1;
+        const withCountry = reviews.filter(r => r.country).length;
+        const withType = reviews.filter(r => r.travelerType).length;
+        return {
+            total: reviews.length,
+            withCountry,
+            withType,
+            countryPct: Math.round((withCountry / total) * 100),
+            typePct: Math.round((withType / total) * 100),
+        };
+    }, [reviews]);
+
     return (
         <div className="space-y-12">
+            {/* Not every export carries origin or segment columns, so say what
+                share of the data these charts are actually built from rather
+                than letting "Not specified" read as a finding. */}
+            {(insightCoverage.countryPct < 100 || insightCoverage.typePct < 100) && (
+                <div className="rounded-2xl border border-sky-200 bg-sky-50/70 px-5 py-4 text-[12px] leading-relaxed text-sky-900">
+                    <p className="font-bold tracking-wide uppercase text-[10px] text-sky-700 mb-1">Coverage</p>
+                    <p>
+                        Country is available for{' '}
+                        <span className="font-bold">{insightCoverage.withCountry} of {insightCoverage.total}</span>{' '}
+                        reviews ({insightCoverage.countryPct}%); traveler type for{' '}
+                        <span className="font-bold">{insightCoverage.withType} of {insightCoverage.total}</span>{' '}
+                        ({insightCoverage.typePct}%). The rest come from exports whose
+                        files do not include those columns and appear as "Not specified".
+                    </p>
+                </div>
+            )}
+
             <div>
                 <h3 className="text-xl font-black text-[var(--text-primary)] mb-6">Traveler Type Demographics</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">

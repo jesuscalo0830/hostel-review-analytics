@@ -73,7 +73,7 @@ const stripUndefined = (review: BookingReview): BookingReview => {
   for (const [k, v] of Object.entries(review)) {
     if (v !== undefined) out[k] = v;
   }
-  return out as BookingReview;
+  return out as unknown as BookingReview;
 };
 
 const readCache = (): BookingReview[] => {
