@@ -55,7 +55,7 @@ const getCI = (row: any, ...keys: string[]): any => {
  * header row plainly had the columns.
  */
 const extractCountry = (row: any): string | undefined =>
-  String(getCI(row, 'Country', 'Guest Country', 'Nationality') || '').trim() || undefined;
+  String(getCI(row, 'Country', 'Guest Country', 'Guest location', 'Nationality') || '').trim() || undefined;
 
 const extractTravelerType = (row: any): string | undefined =>
   String(
@@ -178,25 +178,40 @@ const parseBookingRows = (rows: any[]): BookingReview[] => {
 
 const parseAgodaRows = (rows: any[]): BookingReview[] => {
   return rows.flatMap((row: any) => {
-    // Agoda exports include header rows for property names -- skip them.
-    if (!row['Review date'] || !row['Review score']) return [];
+    // Read every column case-insensitively and through alias lists. Agoda
+    // exports vary by which report generated them: the per-property export
+    // names the score "Overall score", the text "Review comment", the guest
+    // country "Guest location" and the reference "BID", while other exports
+    // use "Review score" / "Review" / "Country" / "Reservation Number".
+    // Matching exact keys meant a whole file parsed to zero rows.
+    const reviewDate = String(getCI(row, 'Review date', 'Review Date', 'Date') || '').trim();
+    const reviewScore = parseScore(getCI(row, 'Review score', 'Overall score', 'Overall Score', 'Score'));
+    const text = String(getCI(row, 'Review comment', 'Review Comment', 'Review', 'Comment') || '');
+    const title = String(getCI(row, 'Review title', 'Review Title', 'Title') || '').trim();
+
+    // Agoda exports carry property-name banner rows; a row with no date, no
+    // score and no text is one of those rather than a review.
+    if (!reviewDate && reviewScore === 0 && !text && !title) return [];
+
     return [{
-      reviewDate: String(row['Review date'] || '').trim(),
-      reservationNumber: String(row['Reservation Number'] || row['Reservation number'] || '').replace(/^BID:\s*/i, '').trim(),
-      guestName: String(row['Guest name'] || row['Guest Name'] || '').trim(),
-      reviewTitle: String(row['Review title'] || '').trim(),
-      roomName: String(row['Room name'] || row['Rental Name'] || 'General').trim(),
-      // Agoda's single "Review" field maps to positive; we don't have a separate negative
-      positiveReview: String(row['Review'] || ''),
+      reviewDate,
+      reservationNumber: String(
+        getCI(row, 'BID', 'Booking number (BID)', 'Reservation Number', 'Reservation number') || ''
+      ).replace(/^BID:\s*/i, '').trim(),
+      guestName: String(getCI(row, 'Guest name', 'Guest Name') || '').trim(),
+      reviewTitle: title,
+      roomName: String(getCI(row, 'Room type', 'Room name', 'Room', 'Rental Name') || 'General').trim(),
+      // Agoda has a single text field -- no positive/negative split.
+      positiveReview: text,
       negativeReview: '',
-      reviewScore: parseScore(row['Review score']),
-      staff: parseScore(row['Service']),  // Agoda's equivalent of Staff
-      cleanliness: parseScore(row['Cleanliness']),
-      location: parseScore(row['Location']),
-      facilities: parseScore(row['Facilities']),
-      comfort: 0, // Agoda doesn't report Comfort
-      valueForMoney: parseScore(row['Value for money']),
-      propertyReply: String(row['Property reply'] || ''),
+      reviewScore,
+      staff: parseScore(getCI(row, 'Service', 'Staff')),  // Agoda's equivalent of Staff
+      cleanliness: parseScore(getCI(row, 'Cleanliness')),
+      location: parseScore(getCI(row, 'Location')),
+      facilities: parseScore(getCI(row, 'Facilities')),
+      comfort: parseScore(getCI(row, 'Comfort')),   // absent in most Agoda exports
+      valueForMoney: parseScore(getCI(row, 'Value for money', 'Value for Money')),
+      propertyReply: String(getCI(row, 'Property reply', 'Property Reply', 'Response') || ''),
       platform: 'Agoda' as ReviewPlatform,
       country: extractCountry(row),
       travelerType: extractTravelerType(row),
